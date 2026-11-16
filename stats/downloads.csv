@@ -1,0 +1,10 @@
+date,tag,asset,download_count
+2026-11-16,v1.4.1,garmin-mcp.mcpb,30
+2026-11-16,v1.4.1,latest-cloud.json,20
+2026-11-16,v1.4.1,latest-mcpb.json,23
+2026-11-16,v1.4.1,latest-npx.json,12
+2026-11-16,v1.4.0,garmin-mcp.mcpb,4
+2026-11-16,v1.4.0,latest-cloud.json,5
+2026-11-16,v1.4.0,latest-mcpb.json,2
+2026-11-16,v1.4.0,latest-npx.json,4
+2026-11-16,v1.3.0,garmin-mcp.mcpb,20
