@@ -1,12 +1,19 @@
 #!/usr/bin/env node
 // npm run update: brings an existing cloud deployment up to date. Pulls the
 // latest code, reinstalls, checks your wrangler.jsonc against the example,
-// runs the tests and deploys. Never edits your wrangler.jsonc.
+// runs the tests and deploys. Never edits your wrangler.jsonc, never pushes.
+//
+// Works on forks too: when origin isn't colincooperio/garmin-mcp, it adds that
+// as "upstream" (if missing), fetches it and fast-forwards from upstream/main.
 import { fileURLToPath } from "node:url";
 import { CONFIG, confirm, describeFailure, EXAMPLE, makeFiles, makeIO, makeRunner, missingSettings, readPackageVersion, StepError, wrangler } from "./lib.mjs";
 
 export const OLD_REMOTE = /github\.com[:/]cacooper16\/garmin-cloud-mcp(\.git)?\/?$/i;
 export const NEW_REMOTE = "https://github.com/colincooperio/garmin-mcp.git";
+/** The project's own repo, by any GitHub URL form. */
+export const UPSTREAM_REMOTE = /github\.com[:/]colincooperio\/garmin-mcp(\.git)?\/?$/i;
+/** Origin points at the project itself (the old address redirects there), not a fork. */
+const isProject = (url) => UPSTREAM_REMOTE.test(url) || OLD_REMOTE.test(url);
 
 /** The current commit, or undefined if git can't say. */
 async function head(run) {
@@ -22,18 +29,36 @@ export async function runUpdate(ctx) {
 		throw new StepError("settings", `there's no ${CONFIG} here, so this copy isn't set up for the cloud yet.`, "run npm run setup instead.", 1);
 	}
 
-	// 1. Repo moved
+	// 1. Repo moved, or a fork
 	step(1, "Checking where updates come from");
 	const remote = await run("git", ["remote", "get-url", "origin"]);
-	const url = remote.stdout.trim();
-	if (remote.code === 0 && OLD_REMOTE.test(url)) {
+	const url = remote.code === 0 ? remote.stdout.trim() : "";
+	const fork = !isProject(url);
+	if (OLD_REMOTE.test(url)) {
 		io.print(`   This copy still pulls from ${url}; the project now lives at ${NEW_REMOTE}.`);
 		if (await confirm(io, "   Switch to the new address?")) {
 			const set = await run("git", ["remote", "set-url", "origin", NEW_REMOTE]);
 			if (set.code !== 0) throw new StepError("git remote", `couldn't change the remote: ${set.stderr.trim()}`, `run git remote set-url origin ${NEW_REMOTE}, then npm run update again.`, 1);
 			io.print("   Switched.");
 		}
-	} else io.print(`   ${url || "(no origin remote)"}`);
+	} else if (!fork) io.print(`   ${url}`);
+	else {
+		io.print(`   ${url ? `${url} is a fork` : "There's no origin remote"}; updates come from ${NEW_REMOTE}, as the remote "upstream".`);
+		const up = await run("git", ["remote", "get-url", "upstream"]);
+		const upUrl = up.code === 0 ? up.stdout.trim() : "";
+		if (!upUrl) {
+			const add = await run("git", ["remote", "add", "upstream", NEW_REMOTE]);
+			if (add.code !== 0) throw new StepError("git remote", `couldn't add the upstream remote: ${add.stderr.trim()}`, `run git remote add upstream ${NEW_REMOTE}, then npm run update again.`, 1);
+			io.print("   Added it as upstream.");
+		} else if (!isProject(upUrl)) {
+			throw new StepError(
+				"git remote",
+				`this copy already has a remote called upstream, pointing at ${upUrl} rather than ${NEW_REMOTE}.`,
+				`run git remote set-url upstream ${NEW_REMOTE} (or rename yours with git remote rename upstream <name>), then npm run update again.`,
+				1,
+			);
+		}
+	}
 
 	// 2. Local changes
 	step(2, "Checking for local changes");
@@ -53,9 +78,30 @@ export async function runUpdate(ctx) {
 	const from = readPackageVersion(files);
 	const before = await head(run);
 	step(3, "Downloading the latest version");
-	const pull = await run("git", ["pull", "--ff-only"], { inherit: true });
-	if (pull.code !== 0) {
-		throw new StepError("git pull", "git pull --ff-only failed (its output is above), usually because this copy has commits of its own.", "run git pull --rebase, then npm run update again.", 3);
+	if (url) {
+		// From origin: the project itself, or for a fork, whatever "Sync fork" on GitHub brought in.
+		const pull = await run("git", ["pull", "--ff-only"], { inherit: true });
+		if (pull.code !== 0) {
+			throw new StepError(
+				"git pull",
+				"git pull --ff-only failed (its output is above), usually because this copy has commits of its own.",
+				fork ? "merge the changes from your fork yourself (git pull), then run npm run update again." : "run git pull --rebase, then npm run update again.",
+				3,
+			);
+		}
+	}
+	if (fork) {
+		const fetched = await run("git", ["fetch", "upstream"], { inherit: true });
+		if (fetched.code !== 0) throw new StepError("git fetch", `couldn't download the latest version from ${NEW_REMOTE} (git's output is above).`, "check your connection, then run npm run update again.", 3);
+		const ff = await run("git", ["merge", "--ff-only", "upstream/main"], { inherit: true });
+		if (ff.code !== 0) {
+			throw new StepError(
+				"update from upstream",
+				"your copy has changes of its own that aren't in colincooperio/garmin-mcp, so it can't simply move forward to the latest version. Stopped before deploying; nothing was changed in Cloudflare.",
+				"sync your fork on GitHub (Sync fork on your fork's page), or merge upstream/main yourself (git merge upstream/main), then run npm run update again.",
+				3,
+			);
+		}
 	}
 	const ci = await run("npm", ["ci"], { inherit: true });
 	if (ci.code !== 0) throw new StepError("npm ci", "npm ci failed (its output is above).", "run npm ci again (it often succeeds the second time after a network hiccup), then npm run update again.", 3);

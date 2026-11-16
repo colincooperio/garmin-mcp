@@ -537,6 +537,96 @@ describe("npm run update", () => {
 		});
 	});
 
+	const commands = (w: ReturnType<typeof world>) => w.calls.map((c) => (c.cmd === "npx" && c.args[0] === "--no" ? c.args.slice(2) : [c.cmd, ...c.args]).join(" "));
+
+	it("origin is the project: pulls from it, with no upstream remote", async () => {
+		const w = updateWorld();
+		await runUpdate({ run: w.run, io: io([]), files: w.files });
+		const cmds = commands(w);
+		assert.ok(cmds.includes("git pull --ff-only"));
+		assert.ok(!cmds.some((c) => c.includes("upstream")), "no upstream added or fetched");
+		assert.ok(!cmds.some((c) => c.startsWith("git push")), "never pushes");
+	});
+
+	it("origin is a fork: adds upstream, fetches it, fast-forwards from upstream/main and deploys", async () => {
+		let commit = "aaa111";
+		const w = updateWorld({
+			"git remote get-url origin": { code: 0, stdout: "git@github.com:someone/garmin-mcp.git\n" },
+			"git remote get-url upstream": { code: 2, stderr: "error: No such remote 'upstream'" },
+			"git remote add upstream": { code: 0 },
+			"git rev-parse HEAD": () => ({ code: 0, stdout: `${commit}\n` }),
+			"git pull --ff-only": { code: 0 }, // the fork itself is behind too
+			"git fetch upstream": { code: 0 },
+			"git merge --ff-only upstream/main": () => (w.store.set("package.json", pkg("1.4.0")), (commit = "ccc333"), { code: 0 }),
+		});
+		const term = io([]);
+		assert.deepEqual(await runUpdate({ run: w.run, io: term, files: w.files }), { from: "1.3.0", to: "1.4.0" });
+		assert.deepEqual(commands(w), [
+			"git remote get-url origin",
+			"git remote get-url upstream",
+			`git remote add upstream ${NEW_REMOTE}`,
+			"git status --porcelain --untracked-files=no",
+			"git rev-parse HEAD",
+			"git pull --ff-only",
+			"git fetch upstream",
+			"git merge --ff-only upstream/main",
+			"npm ci",
+			"git rev-parse HEAD",
+			"npm run check",
+			"wrangler deploy",
+		]);
+		const out = term.printed.join("\n");
+		assert.match(out, /git@github\.com:someone\/garmin-mcp\.git is a fork; updates come from https:\/\/github\.com\/colincooperio\/garmin-mcp\.git/);
+		assert.match(out, /Updated: 1\.3\.0 -> 1\.4\.0\./);
+		assert.deepEqual(term.asked, [], "no questions");
+	});
+
+	it("a fork that already has upstream: doesn't add it again, and says Already up to date when nothing moved", async () => {
+		const w = updateWorld(
+			{
+				"git remote get-url origin": { code: 0, stdout: "https://github.com/someone/garmin-mcp\n" },
+				"git remote get-url upstream": { code: 0, stdout: "https://github.com/colincooperio/garmin-mcp.git\n" },
+				"git pull --ff-only": { code: 0 },
+				"git fetch upstream": { code: 0 },
+				"git merge --ff-only upstream/main": { code: 0 },
+			},
+			{ "package.json": pkg("1.4.0") },
+		);
+		const term = io([]);
+		await runUpdate({ run: w.run, io: term, files: w.files });
+		assert.ok(!commands(w).some((c) => c.startsWith("git remote add")));
+		assert.match(term.printed.join("\n"), /Already up to date: redeployed 1\.4\.0\./);
+	});
+
+	it("a fork with changes of its own: stops before deploying and says how to sync", async () => {
+		const w = updateWorld({
+			"git remote get-url origin": { code: 0, stdout: "https://github.com/someone/garmin-mcp.git\n" },
+			"git remote get-url upstream": { code: 2 },
+			"git remote add upstream": { code: 0 },
+			"git pull --ff-only": { code: 0 },
+			"git fetch upstream": { code: 0 },
+			"git merge --ff-only upstream/main": { code: 128, stderr: "fatal: Not possible to fast-forward, aborting." },
+		});
+		await assert.rejects(runUpdate({ run: w.run, io: io([]), files: w.files }), (err: any) => {
+			assert.equal(err.num, 3);
+			assert.match(err.message, /changes of its own .* Stopped before deploying/s);
+			assert.match(err.hint, /sync your fork on GitHub .*or merge upstream\/main yourself \(git merge upstream\/main\), then run npm run update again/);
+			return true;
+		});
+		const cmds = commands(w);
+		assert.ok(!cmds.some((c) => c.includes("deploy") || c === "npm ci" || c === "npm run check"), "nothing installed, tested or deployed");
+		assert.ok(!cmds.some((c) => c.startsWith("git push")), "never pushes");
+	});
+
+	it("a fork whose upstream remote points somewhere else: stops and says how to fix it", async () => {
+		const w = updateWorld({
+			"git remote get-url origin": { code: 0, stdout: "https://github.com/someone/garmin-mcp.git\n" },
+			"git remote get-url upstream": { code: 0, stdout: "https://github.com/other/thing.git\n" },
+		});
+		await assert.rejects(runUpdate({ run: w.run, io: io([]), files: w.files }), (err: any) => err.num === 1 && /git remote set-url upstream/.test(err.hint));
+		assert.ok(!commands(w).some((c) => c.startsWith("git pull") || c.startsWith("git fetch")));
+	});
+
 	it("doesn't deploy when the tests fail", async () => {
 		const w = updateWorld({ "npm run check": { code: 1 } });
 		await assert.rejects(runUpdate({ run: w.run, io: io([]), files: w.files }), (err: any) => err.step === "tests" && /Nothing was deployed/.test(err.message));
