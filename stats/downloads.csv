@@ -1,4 +1,17 @@
 date,tag,asset,download_count
+2026-11-16,v1.4.2,garmin-mcp.mcpb,0
+2026-11-16,v1.4.2,install-cloud.json,0
+2026-11-16,v1.4.2,install-mcpb.json,0
+2026-11-16,v1.4.2,install-npx.json,0
+2026-11-16,v1.4.2,latest-cloud.json,0
+2026-11-16,v1.4.2,latest-mcpb.json,0
+2026-11-16,v1.4.2,latest-npx.json,0
+2026-11-16,v1.4.2,monthly-cloud.json,0
+2026-11-16,v1.4.2,monthly-mcpb.json,0
+2026-11-16,v1.4.2,monthly-npx.json,0
+2026-11-16,v1.4.2,weekly-cloud.json,0
+2026-11-16,v1.4.2,weekly-mcpb.json,0
+2026-11-16,v1.4.2,weekly-npx.json,0
 2026-11-16,v1.4.1,garmin-mcp.mcpb,30
 2026-11-16,v1.4.1,latest-cloud.json,20
 2026-11-16,v1.4.1,latest-mcpb.json,23
