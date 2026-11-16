@@ -1,9 +1,14 @@
 /**
- * Update notice. At most once a day, in the background, download a tiny
- * version file attached to the latest GitHub release
+ * Update notice. Once per UTC calendar day, in the background, download a
+ * tiny version file attached to the latest GitHub release
  * (latest-<mcpb|npx|cloud>.json: {"latest": "x.y.z", "url": "<release>"}).
- * GitHub counts each download per file, which is the only usage signal the
- * project gets; nothing about the user or their data is sent.
+ * GitHub counts each download per file, so the daily counts are daily active
+ * installs by type (usage.ts adds weekly, monthly and first-install files);
+ * nothing about the user or their data is sent.
+ *
+ * The day of the last check is kept in the store passed as `kv`: locally the
+ * state folder on disk (so a restart the same day doesn't check again), in the
+ * cloud KV (so all Worker instances together check once a day).
  *
  * When a newer version exists, the first tool result of each server session
  * (local) or each day (cloud) carries an update_available field with one
@@ -18,9 +23,12 @@ import type { KVLike } from "./garmin.ts";
 
 export const RELEASES = "https://github.com/colincooperio/garmin-mcp/releases";
 export const CHECK_INTERVAL_SECONDS = 24 * 60 * 60;
+/** How long the last result is kept: a little over a day, so it's there until the next check. */
+const CACHE_TTL_SECONDS = 2 * CHECK_INTERVAL_SECONDS;
 export const CHECK_TIMEOUT_MS = 3000;
 const USER_AGENT = "garmin-mcp-update-check";
-const CACHE_KEY = "garmin:update:latest";
+/** Per install type: the Desktop extension and npx on one computer share the state folder. */
+const CACHE_KEY = "garmin:update:latest:";
 const SHOWN_KEY = "garmin:update:shown:";
 
 /**
@@ -52,6 +60,26 @@ export function howToUpdate(install: Install, latest: string): string {
 	}
 }
 
+export type Period = "day" | "week" | "month";
+
+/**
+ * The UTC period containing `seconds` (since epoch): "YYYY-MM-DD" for a day,
+ * "YYYY-Www" for an ISO week (weeks start on Monday; week 1 holds the year's
+ * first Thursday, so early January can belong to the previous year's last
+ * week), "YYYY-MM" for a month.
+ */
+export function periodKey(period: Period, seconds: number): string {
+	const d = new Date(seconds * 1000);
+	if (period === "day") return d.toISOString().slice(0, 10);
+	if (period === "month") return d.toISOString().slice(0, 7);
+	// The Thursday of this ISO week decides its year.
+	const thursday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+	thursday.setUTCDate(thursday.getUTCDate() + 4 - (thursday.getUTCDay() || 7));
+	const year = thursday.getUTCFullYear();
+	const week = Math.ceil(((thursday.getTime() - Date.UTC(year, 0, 1)) / 86_400_000 + 1) / 7);
+	return `${year}-W${String(week).padStart(2, "0")}`;
+}
+
 const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
 
 /** -1, 0 or 1; undefined when either isn't x.y.z[-pre]. A pre-release sorts before its release. */
@@ -69,8 +97,9 @@ export function compareSemver(a: string, b: string): number | undefined {
 	return x[4] < y[4] ? -1 : 1;
 }
 
-/** What the last check found. `latest` is absent when the check failed. */
+/** The last check: its UTC day, and the newest version known (kept from earlier checks if this one failed). */
 interface Cached {
+	day?: string;
 	checkedAt: number;
 	latest?: string;
 	url?: string;
@@ -128,30 +157,40 @@ export class UpdateCheck {
 		this.now = o.now ?? (() => Math.floor(Date.now() / 1000));
 	}
 
-	/** Reads the last result from the cache into memory (once). Never throws. */
+	/** Reads the last result from the store into memory (once). Never throws. */
 	load(): Promise<void> {
-		this.loading ??= (async () => {
-			if (this.o.disabled) return;
-			try {
-				const raw = await this.o.kv.get(CACHE_KEY);
-				if (raw) this.cached = JSON.parse(raw) as Cached;
-			} catch {
-				// Unreadable cache: treat as never checked.
-			}
-		})();
+		this.loading ??= this.o.disabled ? Promise.resolve() : this.read();
 		return this.loading;
 	}
 
+	private async read(): Promise<void> {
+		try {
+			const raw = await this.o.kv.get(CACHE_KEY + assetFor(this.o.install));
+			if (raw) this.cached = JSON.parse(raw) as Cached;
+		} catch {
+			// Unreadable: keep what's in memory (or treat as never checked).
+		}
+	}
+
 	/**
-	 * Checks GitHub unless a check (successful or not) happened in the last 24
-	 * hours. Meant to be started and not awaited by tool calls. Never throws.
+	 * Checks GitHub unless a check (successful or not) already happened on
+	 * this UTC day, by this process or any other sharing the store. Meant to
+	 * be started on start-up and on each tool call, not awaited. Never throws.
 	 */
 	refresh(): Promise<void> {
 		if (this.o.disabled) return Promise.resolve();
+		const today = periodKey("day", this.now());
+		if (this.cached?.day === today) return Promise.resolve();
 		this.refreshing ??= (async () => {
+			// Always re-read: another Worker instance, or an earlier run today, may have checked.
 			await this.load();
-			if (this.cached && this.now() - this.cached.checkedAt < CHECK_INTERVAL_SECONDS) return;
-			const result: Cached = { checkedAt: this.now() };
+			await this.read();
+			if (this.cached?.day === today) return;
+			// Claim the day before downloading, so others sharing the store skip it.
+			const claimed: Cached = { ...this.cached, day: today, checkedAt: this.now() };
+			this.cached = claimed;
+			await this.o.kv.put(CACHE_KEY + assetFor(this.o.install), JSON.stringify(claimed), { expirationTtl: CACHE_TTL_SECONDS }).catch(() => {});
+			const result: Cached = { ...claimed };
 			try {
 				const res = await this.fetchImpl(checkUrl(this.o.install), {
 					headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
@@ -160,15 +199,20 @@ export class UpdateCheck {
 				});
 				if (res.ok) {
 					const body = (await res.json()) as { latest?: unknown; url?: unknown };
-					if (typeof body.latest === "string" && SEMVER.test(body.latest)) result.latest = body.latest;
-					if (typeof body.url === "string" && body.url.startsWith(`${RELEASES}/`)) result.url = body.url;
-				}
+					if (typeof body.latest === "string" && SEMVER.test(body.latest)) {
+						result.latest = body.latest;
+						result.url = typeof body.url === "string" && body.url.startsWith(`${RELEASES}/`) ? body.url : undefined;
+					}
+				} else await res.body?.cancel().catch(() => {});
 			} catch {
-				// Offline, timed out or blocked: try again tomorrow.
+				// Offline, timed out or blocked: keep what was known, try again tomorrow.
+				return;
 			}
 			this.cached = result;
-			await this.o.kv.put(CACHE_KEY, JSON.stringify(result), { expirationTtl: CHECK_INTERVAL_SECONDS }).catch(() => {});
-		})().finally(() => (this.refreshing = undefined));
+			await this.o.kv.put(CACHE_KEY + assetFor(this.o.install), JSON.stringify(result), { expirationTtl: CACHE_TTL_SECONDS }).catch(() => {});
+		})()
+			.catch(() => {})
+			.finally(() => (this.refreshing = undefined));
 		return this.refreshing;
 	}
 

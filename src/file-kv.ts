@@ -28,7 +28,8 @@ const SUFFIX = ".json";
 /**
  * Keys that may be written to disk: cached Garmin responses and derived
  * values (analyses), both already keyed by a hash of the API key, and the
- * update check's result (a version number and a date). Anything
+ * update check's and usage pings' markers (a version number and dates; these
+ * normally go to the separate state store, see createLocalKV). Anything
  * else (notably `garmin:token:*`, the bearer token) is kept in memory only.
  */
 export const DISK_PREFIXES = ["garmin:resp:", "garmin:derived:", "garmin:update:"] as const;
@@ -239,22 +240,46 @@ export function cacheDir(env: Env = process.env, platform = process.platform, ho
 	return join(home, ".cache", "garmin-mcp");
 }
 
-/** The KV the stdio server uses: disk-backed for derived data unless GARMIN_MCP_NO_CACHE=1. */
+/** Subfolder of the cache directory for the update check's and usage pings' markers. */
+export const STATE_SUBDIR = "state";
+
+/**
+ * Small markers that must survive restarts: the day of the last update check
+ * and which usage pings have been sent (week, month, first install). A few
+ * dozen bytes each, nothing about the user. `persistent` is false when they
+ * can only be kept in memory (no usable directory, or the disk failed).
+ */
+export interface LocalState {
+	kv: KVLike;
+	dir?: string;
+	persistent: () => boolean;
+}
+
+/**
+ * The KVs the stdio server uses:
+ * - `kv`: disk-backed for derived data, or memory only with GARMIN_MCP_NO_CACHE=1;
+ * - `state`: always on disk when possible, in `<cache dir>/state`. It's kept
+ *   with GARMIN_MCP_NO_CACHE=1 and never evicted: the cache's size cap only
+ *   counts files directly in the cache directory, and the state store's own
+ *   cap is unlimited. It's only written while the update check is on.
+ */
 export function createLocalKV(
 	env: Env = process.env,
 	opts: FileKVOptions = {},
-): { kv: KVLike; dir?: string } {
-	if (["1", "true", "yes"].includes(env.GARMIN_MCP_NO_CACHE?.trim().toLowerCase() ?? "")) {
-		return { kv: new MemoryKV(opts.now) };
-	}
+): { kv: KVLike; dir?: string; state: LocalState } {
+	const warn = opts.warn ?? ((m: string) => console.error(m));
 	let dir: string;
 	try {
 		dir = cacheDir(env);
 	} catch (err) {
-		(opts.warn ?? ((m: string) => console.error(m)))(
-			`garmin-mcp: can't work out a cache directory (${err instanceof Error ? err.message : String(err)}); caching in memory.`,
-		);
-		return { kv: new MemoryKV(opts.now) };
+		warn(`garmin-mcp: can't work out a cache directory (${err instanceof Error ? err.message : String(err)}); caching in memory.`);
+		return { kv: new MemoryKV(opts.now), state: { kv: new MemoryKV(opts.now), persistent: () => false } };
 	}
-	return { kv: new SplitKV(new FileKV(dir, opts), new MemoryKV(opts.now)), dir };
+	const stateDir = join(dir, STATE_SUBDIR);
+	const stateKV = new FileKV(stateDir, { ...opts, maxBytes: Number.POSITIVE_INFINITY });
+	const state: LocalState = { kv: stateKV, dir: stateDir, persistent: () => stateKV.onDisk };
+	if (["1", "true", "yes"].includes(env.GARMIN_MCP_NO_CACHE?.trim().toLowerCase() ?? "")) {
+		return { kv: new MemoryKV(opts.now), state };
+	}
+	return { kv: new SplitKV(new FileKV(dir, opts), new MemoryKV(opts.now)), dir, state };
 }

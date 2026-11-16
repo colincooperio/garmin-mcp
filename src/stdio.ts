@@ -32,17 +32,17 @@ if (!apiKey.trim()) {
 
 // Derived data (analyses, settled past-date responses) is cached on disk so it
 // survives restarts; the bearer token is only ever held in memory.
-const { kv, dir } = createLocalKV(process.env);
+// `state` holds only the update check's small marker; it's
+// on disk even with GARMIN_MCP_NO_CACHE=1 and never evicted (see file-kv.ts).
+const { kv, dir, state } = createLocalKV(process.env);
 
 // Update notice: a daily, background download of a small version file from
 // GitHub (see update.ts). Off with GARMIN_MCP_NO_UPDATE_CHECK=1 (or, from the
 // Desktop extension, GARMIN_MCP_UPDATE_CHECK=false), and skipped when running
 // from a source checkout.
 const install = await detectInstall(process.env, process.argv[1] ?? "", SERVER_VERSION).catch(() => undefined);
-const update =
-	install && !updateCheckDisabled(process.env.GARMIN_MCP_NO_UPDATE_CHECK, process.env.GARMIN_MCP_UPDATE_CHECK)
-		? new UpdateCheck({ current: SERVER_VERSION, install, kv })
-		: undefined;
+const on = install && !updateCheckDisabled(process.env.GARMIN_MCP_NO_UPDATE_CHECK, process.env.GARMIN_MCP_UPDATE_CHECK);
+const update = on ? new UpdateCheck({ current: SERVER_VERSION, install, kv: state.kv }) : undefined;
 await update?.load();
 
 const server = createGarminServer(() => new GarminClient({ apiKey, kv, cacheResponses: true }), { update });

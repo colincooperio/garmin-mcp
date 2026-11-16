@@ -101,19 +101,19 @@ describe("UpdateCheck", () => {
 		}
 	});
 
-	it("fails silently when GitHub can't be reached, and doesn't retry for 24 hours", async () => {
-		const clock = { t: 1_800_000_000 };
+	it("fails silently when GitHub can't be reached, and doesn't retry until the next UTC day", async () => {
+		const clock = { t: Date.parse("2026-11-16T08:00:00Z") / 1000 };
 		const kv = new MemoryKV(() => clock.t);
 		const down = checker({ latest: new Error("ENOTFOUND"), kv, clock });
 		await down.u.refresh(); // doesn't throw
 		assert.equal(await down.u.notice(), undefined);
 		assert.equal(down.gh.urls.length, 1);
-		// A new session (a restart) within the day doesn't try again...
+		// A new session (a restart) the same day doesn't try again...
 		const later = checker({ kv, clock });
 		await later.u.refresh();
 		assert.equal(later.gh.urls.length, 0);
-		// ...but after 24 hours it does.
-		clock.t += DAY;
+		// ...but the next UTC day it does.
+		clock.t = Date.parse("2026-11-17T00:00:01Z") / 1000;
 		await later.u.refresh();
 		assert.equal(later.gh.urls.length, 1);
 		assert.equal((await later.u.notice())?.latest, "1.5.0");
@@ -130,21 +130,94 @@ describe("UpdateCheck", () => {
 		assert.equal(await u.notice(), undefined);
 	});
 
-	it("checks at most once every 24 hours, using the cache across sessions", async () => {
-		const clock = { t: 1_800_000_000 };
+	it("checks once per UTC calendar day, using the store across sessions", async () => {
+		const clock = { t: Date.parse("2026-11-16T00:30:00Z") / 1000 };
 		const kv = new MemoryKV(() => clock.t);
 		const first = checker({ kv, clock });
 		await Promise.all([first.u.refresh(), first.u.refresh()]);
 		assert.equal(first.gh.urls.length, 1, "concurrent refreshes share one request");
-		clock.t += DAY - 60;
+		await first.u.refresh();
+		assert.equal(first.gh.urls.length, 1, "a tool call later the same day doesn't check again");
+		clock.t = Date.parse("2026-11-16T23:59:00Z") / 1000;
 		const second = checker({ kv, clock });
 		await second.u.refresh();
-		assert.equal(second.gh.urls.length, 0, "cached");
-		assert.equal((await second.u.notice())?.latest, "1.5.0", "a new session knows from the cache");
+		assert.equal(second.gh.urls.length, 0, "a restart the same UTC day doesn't check again");
+		assert.equal((await second.u.notice())?.latest, "1.5.0", "a new session knows from the store");
 		assert.ok(second.u.instructionsLine(), "and says so at initialize");
-		clock.t += 120;
+		clock.t += 120; // 00:01 the next day, less than 24 hours after the first check
 		await second.u.refresh();
-		assert.equal(second.gh.urls.length, 1, "the day has passed");
+		assert.equal(second.gh.urls.length, 1, "a new UTC day: checked, so each active day is counted");
+		await second.u.refresh();
+		assert.equal(second.gh.urls.length, 1);
+	});
+
+	it("the Desktop extension and npx on one computer each check once a day", async () => {
+		const clock = { t: Date.parse("2026-11-16T09:00:00Z") / 1000 };
+		const kv = new MemoryKV(() => clock.t);
+		const desktop = checker({ kv, clock, install: { type: "mcpb" } });
+		const npx = checker({ kv, clock, install: { type: "npx", pinned: false } });
+		await desktop.u.refresh();
+		await npx.u.refresh();
+		assert.deepEqual([...desktop.gh.urls, ...npx.gh.urls].map((u) => u.split("/").at(-1)), ["latest-mcpb.json", "latest-npx.json"]);
+	});
+
+	it("a long-running session checks again on the next day's first tool call", async () => {
+		const clock = { t: Date.parse("2026-11-16T09:00:00Z") / 1000 };
+		const { u, gh } = checker({ clock, latest: "1.4.0" });
+		await u.refresh();
+		clock.t += 26 * 3600;
+		await callGarminTool("get_daily_summaries", () => Response.json({ data: [] }), { start_date: "2020-01-01", end_date: "2020-01-02" }, { update: u });
+		await u.refresh(); // joins the one the tool call started
+		assert.equal(gh.urls.length, 2);
+	});
+
+	it("cloud: Worker instances sharing KV check once a day in total", async () => {
+		const clock = { t: Date.parse("2026-11-16T08:00:00Z") / 1000 };
+		const kv = new MemoryKV(() => clock.t);
+		const a = checker({ kv, clock, install: { type: "cloud" }, perDay: true });
+		const b = checker({ kv, clock, install: { type: "cloud" }, perDay: true });
+		await a.u.load();
+		await b.u.load(); // both started before either checked
+		await a.u.refresh();
+		await b.u.refresh();
+		const c = checker({ kv, clock, install: { type: "cloud" }, perDay: true });
+		await c.u.refresh();
+		assert.equal(a.gh.urls.length + b.gh.urls.length + c.gh.urls.length, 1);
+		assert.equal((await b.u.notice())?.latest, "1.5.0", "the others still learn the result from KV");
+		clock.t += 86_400;
+		await b.u.refresh();
+		await a.u.refresh();
+		assert.equal(a.gh.urls.length + b.gh.urls.length, 2, "and once the next day");
+	});
+
+	it("local: the day is stored on disk, so a restart the same day doesn't check again (even with GARMIN_MCP_NO_CACHE=1)", async () => {
+		const { mkdtemp, rm } = await import("node:fs/promises");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const { createLocalKV } = await import("../src/file-kv.ts");
+		const dir = await mkdtemp(join(tmpdir(), "garmin-update-"));
+		try {
+			for (const env of [{ GARMIN_MCP_CACHE_DIR: dir }, { GARMIN_MCP_CACHE_DIR: dir, GARMIN_MCP_NO_CACHE: "1" }]) {
+				const clock = { t: Date.parse(env.GARMIN_MCP_NO_CACHE ? "2026-11-20T07:00:00Z" : "2026-11-16T07:00:00Z") / 1000 };
+				const run = async () => {
+					const { state } = createLocalKV(env, { now: () => clock.t }); // a fresh process
+					const gh = github();
+					const u = new UpdateCheck({ current: "1.4.0", install: { type: "mcpb" }, kv: state.kv, fetch: gh.fetch, now: () => clock.t });
+					await u.load();
+					await u.refresh();
+					return { gh, u };
+				};
+				assert.equal((await run()).gh.urls.length, 1, "first start");
+				clock.t += 3600;
+				const again = await run();
+				assert.equal(again.gh.urls.length, 0, "restart the same day");
+				assert.equal((await again.u.notice())?.latest, "1.5.0");
+				clock.t += 86_400;
+				assert.equal((await run()).gh.urls.length, 1, "restart the next day");
+			}
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("local: once per server session", async () => {

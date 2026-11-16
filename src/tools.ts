@@ -137,7 +137,10 @@ export interface UpdateHook {
 	notice(): Promise<UpdateNotice | undefined>;
 	/** One line for the server instructions when an update is already known. */
 	instructionsLine(): string | undefined;
+	/** Starts the daily check if today's hasn't run; called, not awaited, on each tool call. */
+	refresh?(): Promise<void>;
 }
+
 
 /**
  * Puts update_available first in a successful result. Objects get the field
@@ -149,6 +152,8 @@ export function withNotice(data: unknown, notice: UpdateNotice | undefined): unk
 }
 
 async function runTool(fn: () => Promise<unknown>, update?: UpdateHook): Promise<ToolResult> {
+	// Background only: not awaited, and it swallows its own failures.
+	void update?.refresh?.().catch(() => {});
 	let data: unknown;
 	try {
 		data = await fn();

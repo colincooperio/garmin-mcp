@@ -656,7 +656,7 @@ try {
 		assert.equal(r.personal_bests, undefined, "partial results aren't presented as final");
 	});
 
-	await step("update check: off when opted out; on, it's a daily background download and a once-a-day notice", async () => {
+	await step("update check: off when opted out; on, a daily background download shared across instances and a once-a-day notice", async () => {
 		assert.equal(updateChecks.length, 0, "GARMIN_MCP_NO_UPDATE_CHECK=1 makes no request");
 		const { GARMIN_MCP_NO_UPDATE_CHECK, ...on } = mfOptions.bindings;
 		await mf.setOptions({ ...mfOptions, bindings: on });
@@ -676,6 +676,10 @@ try {
 			assert.equal(Object.keys(results.find((r) => r.update_available))[0], "update_available");
 			assert.equal(updateChecks.length, 1, "checked once, not per request");
 			assert.equal(updateChecks[0], "garmin-mcp-update-check");
+			// A new Worker instance (restarted isolate, same KV): nothing more today.
+			await mf.setOptions({ ...mfOptions, bindings: { ...on } });
+			await call();
+			assert.equal(updateChecks.length, 1, "the day is in KV, so a new instance doesn't check again");
 		} finally {
 			await mf.setOptions(mfOptions);
 		}
