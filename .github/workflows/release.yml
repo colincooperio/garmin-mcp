@@ -89,9 +89,12 @@ jobs:
 
       # The update check downloads one of these once a day (latest-mcpb.json
       # from the Desktop extension, latest-npx.json from npx and npm installs,
-      # latest-cloud.json from the Worker); GitHub's per-asset download
-      # counts are the rough install numbers. See src/update.ts.
-      - name: Write the update-check version files
+      # latest-cloud.json from the Worker). See src/update.ts.
+      # The usage pings download weekly-, monthly- and install-<type>.json:
+      # once per ISO week, once per month and once ever. See src/usage.ts.
+      # GitHub's per-asset download counts are the usage numbers
+      # (.github/workflows/stats.yml records them; npm run usage reads them).
+      - name: Write the update-check version files and usage-ping files
         env:
           RELEASE_URL: ${{ github.event.release.html_url }}
         run: |
@@ -99,12 +102,22 @@ jobs:
           for type in mcpb npx cloud; do
             jq -n --arg latest "${TAG#v}" --arg url "$RELEASE_URL" '{latest: $latest, url: $url}' > "latest-$type.json"
             cat "latest-$type.json"
+            for ping in weekly monthly install; do
+              echo '{"ok":true}' > "$ping-$type.json"
+            done
           done
 
-      - name: Attach the Claude Desktop extension and version files
+      # test/release-assets.test.ts checks this list matches what clients download.
+      - name: Attach the Claude Desktop extension, version files and usage-ping files
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" garmin-mcp.mcpb latest-mcpb.json latest-npx.json latest-cloud.json --clobber
+        run: |
+          gh release upload "$TAG" garmin-mcp.mcpb \
+            latest-mcpb.json latest-npx.json latest-cloud.json \
+            weekly-mcpb.json weekly-npx.json weekly-cloud.json \
+            monthly-mcpb.json monthly-npx.json monthly-cloud.json \
+            install-mcpb.json install-npx.json install-cloud.json \
+            --clobber
 
       # The registry checks the version exists on npm, and a just-published
       # version can take a minute or two to appear there.
