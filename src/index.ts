@@ -7,6 +7,7 @@ import { mcpResource } from "./resource.ts";
 import { GitHubHandler, type Props } from "./github-handler.ts";
 import { createGarminServer, SERVER_VERSION } from "./server.ts";
 import { updateCheckDisabled, UpdateCheck } from "./update.ts";
+import { UsagePings } from "./usage.ts";
 
 /**
  * get_personal_bests downloads one FIT file per uncached activity. Cloudflare's
@@ -16,18 +17,22 @@ import { updateCheckDisabled, UpdateCheck } from "./update.ts";
 const WORKER_MAX_DOWNLOADS_PER_CALL = 15;
 
 /**
- * Update notice (see update.ts): checked at most daily in the background via
- * waitUntil, cached in KV, shown on the first tool result of each day. Off
- * with GARMIN_MCP_NO_UPDATE_CHECK = "1" in wrangler.jsonc's vars.
+ * Update notice (see update.ts): checked once per UTC day in the background via
+ * waitUntil, the day recorded in KV so every Worker instance shares it, shown
+ * on the first tool result of each day. Usage pings (see usage.ts): once per
+ * week, month and ever, also recorded in KV. Both off with
+ * GARMIN_MCP_NO_UPDATE_CHECK = "1" in wrangler.jsonc's vars.
  */
 const updateVars = env as Env & { GARMIN_MCP_NO_UPDATE_CHECK?: string; GARMIN_MCP_UPDATE_CHECK?: string };
+const updatesOff = updateCheckDisabled(updateVars.GARMIN_MCP_NO_UPDATE_CHECK, updateVars.GARMIN_MCP_UPDATE_CHECK);
 const update = new UpdateCheck({
 	current: SERVER_VERSION,
 	install: { type: "cloud" },
 	kv: env.OAUTH_KV,
 	perDay: true,
-	disabled: updateCheckDisabled(updateVars.GARMIN_MCP_NO_UPDATE_CHECK, updateVars.GARMIN_MCP_UPDATE_CHECK),
+	disabled: updatesOff,
 });
+const usage = new UsagePings({ install: { type: "cloud" }, kv: env.OAUTH_KV, disabled: updatesOff });
 
 // One server (and Garmin client) per request; the bearer token cache lives at module/KV level.
 function createServer() {
@@ -48,8 +53,9 @@ const apiHandler = {
 		if (!isAllowedUser(props?.githubId, bindings.ALLOWED_GITHUB_USER_ID)) {
 			return new Response("Forbidden", { status: 403 });
 		}
-		// Never delays the response: the check finishes after it, if it runs at all.
+		// Never delays the response: these finish after it, if they run at all.
 		ctx.waitUntil(update.refresh());
+		ctx.waitUntil(usage.tick());
 		return mcpHandler(request, bindings, ctx);
 	},
 } satisfies ExportedHandler<Env>;

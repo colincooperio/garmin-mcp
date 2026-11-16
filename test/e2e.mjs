@@ -25,6 +25,7 @@ const ALLOWED_ID = 1234567;
 let githubUserId = ALLOWED_ID;
 const garminCalls = [];
 const updateChecks = [];
+const usagePings = [];
 
 const jwt = (exp) => {
 	const b = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
@@ -43,6 +44,11 @@ async function outbound(req) {
 	if (url.href === "https://github.com/colincooperio/garmin-mcp/releases/latest/download/latest-cloud.json") {
 		updateChecks.push(req.headers.get("user-agent"));
 		return Response.json({ latest: "9.9.9", url: "https://github.com/colincooperio/garmin-mcp/releases/tag/v9.9.9" });
+	}
+	const ping = url.href.match(/^https:\/\/github\.com\/colincooperio\/garmin-mcp\/releases\/latest\/download\/((?:install|weekly|monthly)-cloud\.json)$/);
+	if (ping) {
+		usagePings.push({ file: ping[1], ua: req.headers.get("user-agent") });
+		return Response.json({ ok: true });
 	}
 	if (url.host === "personal.connectapi.garmin.com") {
 		garminCalls.push(url.pathname + url.search);
@@ -656,8 +662,9 @@ try {
 		assert.equal(r.personal_bests, undefined, "partial results aren't presented as final");
 	});
 
-	await step("update check: off when opted out; on, a daily background download shared across instances and a once-a-day notice", async () => {
+	await step("update check and usage pings: off when opted out; on, a daily check, once-a-day notice, and weekly/monthly/install pings shared across instances", async () => {
 		assert.equal(updateChecks.length, 0, "GARMIN_MCP_NO_UPDATE_CHECK=1 makes no request");
+		assert.equal(usagePings.length, 0, "nor any usage ping");
 		const { GARMIN_MCP_NO_UPDATE_CHECK, ...on } = mfOptions.bindings;
 		await mf.setOptions({ ...mfOptions, bindings: on });
 		try {
@@ -676,10 +683,13 @@ try {
 			assert.equal(Object.keys(results.find((r) => r.update_available))[0], "update_available");
 			assert.equal(updateChecks.length, 1, "checked once, not per request");
 			assert.equal(updateChecks[0], "garmin-mcp-update-check");
+			assert.deepEqual(usagePings.map((p) => p.file).sort(), ["install-cloud.json", "monthly-cloud.json", "weekly-cloud.json"], "one of each");
+			assert.ok(usagePings.every((p) => p.ua === "garmin-mcp-update-check"));
 			// A new Worker instance (restarted isolate, same KV): nothing more today.
 			await mf.setOptions({ ...mfOptions, bindings: { ...on } });
 			await call();
 			assert.equal(updateChecks.length, 1, "the day is in KV, so a new instance doesn't check again");
+			assert.equal(usagePings.length, 3, "nor ping again");
 		} finally {
 			await mf.setOptions(mfOptions);
 		}

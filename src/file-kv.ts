@@ -32,7 +32,7 @@ const SUFFIX = ".json";
  * normally go to the separate state store, see createLocalKV). Anything
  * else (notably `garmin:token:*`, the bearer token) is kept in memory only.
  */
-export const DISK_PREFIXES = ["garmin:resp:", "garmin:derived:", "garmin:update:"] as const;
+export const DISK_PREFIXES = ["garmin:resp:", "garmin:derived:", "garmin:update:", "garmin:usage:"] as const;
 
 export const isDiskKey = (key: string) => DISK_PREFIXES.some((p) => key.startsWith(p));
 

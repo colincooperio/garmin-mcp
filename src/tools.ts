@@ -141,6 +141,11 @@ export interface UpdateHook {
 	refresh?(): Promise<void>;
 }
 
+/** The anonymous weekly, monthly and first-install pings (see usage.ts). */
+export interface UsageHook {
+	/** Sends whatever is due; called, not awaited, on each tool call. Never throws. */
+	tick(): Promise<void>;
+}
 
 /**
  * Puts update_available first in a successful result. Objects get the field
@@ -151,9 +156,10 @@ export function withNotice(data: unknown, notice: UpdateNotice | undefined): unk
 	return isObj(data) ? { update_available: notice, ...data } : { update_available: notice, result: data };
 }
 
-async function runTool(fn: () => Promise<unknown>, update?: UpdateHook): Promise<ToolResult> {
-	// Background only: not awaited, and it swallows its own failures.
+async function runTool(fn: () => Promise<unknown>, update?: UpdateHook, usage?: UsageHook): Promise<ToolResult> {
+	// Background only: neither is awaited, and both swallow their own failures.
 	void update?.refresh?.().catch(() => {});
+	void usage?.tick().catch(() => {});
 	let data: unknown;
 	try {
 		data = await fn();
@@ -173,6 +179,8 @@ export interface ToolOptions {
 	personalBests?: Partial<LoadLimits>;
 	/** Update notice on the first result of a session (local) or day (cloud). */
 	update?: UpdateHook;
+	/** Weekly, monthly and first-install pings, checked on each tool call. */
+	usage?: UsageHook;
 }
 
 /**
@@ -189,7 +197,7 @@ export const PERSONAL_BESTS_LIMITS: LoadLimits = {
 };
 
 export function registerGarminTools(server: McpServer, garmin: () => GarminClient, options: ToolOptions = {}) {
-	const run = (fn: () => Promise<unknown>) => runTool(fn, options.update);
+	const run = (fn: () => Promise<unknown>) => runTool(fn, options.update, options.usage);
 	type Req = { path: string; params?: Record<string, string> };
 	type RangeOpts = {
 		/** Garmin's own per-call limit for this endpoint; longer ranges are split and fetched in parallel. */
