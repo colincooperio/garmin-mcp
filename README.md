@@ -158,13 +158,15 @@ All you need is a Garmin Personal API key (see
 2. Double-click it, paste your Garmin key when asked, done.
 
 Claude Desktop runs the extension itself, so you don't need Node or a config
-file, and your key is stored in your system keychain. To turn off the daily
-update check, untick "Check for updates" in the extension's settings.
+file, and your key is stored in your system keychain. To turn off the update
+check and usage counting, untick "Check for updates" in the extension's
+settings.
 
 Claude Desktop warns before installing it. It shows that warning for every
 extension that isn't installed from Anthropic's directory, not because of
-anything in this one. This extension only connects to Garmin's API (plus a
-daily version check on GitHub; see [Security model](#both)), and its source is
+anything in this one. This extension only connects to Garmin's API (plus
+small downloads from GitHub for the update check and usage counting; see
+[Security model](#both)), and its source is
 all in this repo. To check that your download was built from this repo by its
 release workflow, and not changed since, run this with the
 [GitHub CLI](https://cli.github.com):
@@ -580,6 +582,8 @@ how to update your kind of install (see the update check in
   deploys, then prints the old and new version. If a deploy goes wrong,
   `npx wrangler rollback` returns to the previous one. Set up before 1.4.0?
   Run `git pull` and `npm install` once to get `npm run update`.
+  `npm run update` also works on a fork: it pulls from
+  colincooperio/garmin-mcp (added as the `upstream` remote) and never pushes.
 
 Watch the repo (Watch → Custom → Releases) to get an email when there's a new
 version.
@@ -617,18 +621,24 @@ compact answer is missing it: please [open an issue](CONTRIBUTING.md#reporting-i
 - **Your data's path.** Garmin → your computer or your Worker → your AI app. It
   ends up in whichever chats you use the tools in, under that provider's data
   policies.
-- **Update check.** The only other network request is a daily download of a
-  small version file (`latest-mcpb.json`, `latest-npx.json` or
-  `latest-cloud.json`, a few bytes saying the latest version number) from this
-  project's GitHub releases. It's at most once a day, in the background, and
-  never slows a tool call. GitHub counts each download, which is how the
-  project sees roughly how many installs there are, by type. Nothing about you
-  or your Garmin data is sent: no key, no account, no identifier, just a plain
-  download with a generic User-Agent, so GitHub sees the IP address it comes
-  from (your computer's, or Cloudflare's for the cloud version). If a newer
-  version exists, your AI app mentions it once. To turn it off in the Claude
-  Desktop extension, untick "Check for updates" in its settings. Everywhere
-  else, set `GARMIN_MCP_NO_UPDATE_CHECK=1`: locally in the same `env` block as
+- **Update check and usage counting.** Apart from Garmin, the only network
+  requests are small file downloads from this project's GitHub releases:
+  - Once a day, a small version file, so your AI app can tell you (once) when
+    there's a new version.
+  - Once a week, once a month, and once when it first runs, another small
+    file. GitHub counts how many times each file is downloaded, which is how I
+    count how many people use garmin-mcp.
+
+  Nothing about you or your Garmin data is sent: no key, no account, no ID,
+  just plain downloads, so GitHub sees the IP address they come from (your
+  computer's, or Cloudflare's for the cloud version). They happen in the
+  background and never slow a tool call. To record which ones have been done,
+  a few tiny files are kept in a `state` folder inside the cache folder (see
+  below; in the cloud, a few keys in KV).
+
+  To turn it all off: in the Claude Desktop extension, untick "Check for
+  updates" in its settings. Everywhere else, set
+  `GARMIN_MCP_NO_UPDATE_CHECK=1`: locally in the same `env` block as
   `GARMIN_API_KEY`; in the cloud as a var in `wrangler.jsonc` (it's there,
   commented out), then redeploy.
 
@@ -648,8 +658,9 @@ compact answer is missing it: please [open an issue](CONTRIBUTING.md#reporting-i
   `$XDG_CACHE_HOME/garmin-mcp`), `%LOCALAPPDATA%\garmin-mcp\cache` on
   Windows. It's capped at 200 MB, oldest first out. To clear it, delete that
   folder. To use a different folder, set `GARMIN_MCP_CACHE_DIR`; to keep
-  everything in memory only, set `GARMIN_MCP_NO_CACHE=1` (both go in the same
-  `env` block as `GARMIN_API_KEY`).
+  your Garmin data in memory only, set `GARMIN_MCP_NO_CACHE=1` (both go in the
+  same `env` block as `GARMIN_API_KEY`). The update check's tiny `state`
+  folder is still kept then, unless the update check is off too.
 
 ### Cloud
 

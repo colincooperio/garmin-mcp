@@ -31,6 +31,7 @@ npm run test:pack  # pack, install the tarball in a temp project and run its bin
 npm run dev        # the Worker on :8788 (needs .dev.vars, see .dev.vars.example)
 npm run setup      # interactive first-time cloud setup (scripts/setup.mjs)
 npm run update     # update an existing cloud deployment (scripts/update.mjs)
+npm run usage      # how many people use it, from GitHub's download counts (scripts/usage.mjs)
 npm run sync:prompts # copy the prompts from src/prompts.ts into mcpb/manifest.json (build:mcpb runs it)
 ```
 
@@ -79,21 +80,39 @@ provenance) and the MCP Registry, and attaches `garmin-mcp.mcpb`, with a signed 
 release. It needs no tokens: npm and the MCP Registry both authenticate with
 GitHub's OIDC token.
 
-The release workflow also attaches `latest-mcpb.json`, `latest-npx.json` and
-`latest-cloud.json` (`{"latest": "<version>", "url": "<release url>"}`). The
-server's daily update check downloads the one for its install type, so their
-download counts are a rough count of active installs by type (each counts at
-most once a day per install). To read them:
+The release workflow also attaches, for each install type (`mcpb`, `npx`,
+`cloud`):
+
+- `latest-<type>.json` (`{"latest": "<version>", "url": "<release url>"}`):
+  the update check downloads it once per UTC day (`src/update.ts`);
+- `weekly-<type>.json`, `monthly-<type>.json` and `install-<type>.json`
+  (`{"ok":true}`): downloaded once per ISO week, once per month and once ever
+  (`src/usage.ts`).
+
+GitHub's download counts for these are the usage numbers. Unpinned `npx`
+installs are counted but never shown the update notice. Turning the check off
+(`GARMIN_MCP_NO_UPDATE_CHECK=1`, or the Desktop switch) removes an install
+from all of them. `test/release-assets.test.ts` fails if the release stops
+attaching a file the server downloads.
+
+## Reading usage
 
 ```sh
-gh api repos/colincooperio/garmin-mcp/releases --jq '.[] | {tag: .tag_name, assets: [.assets[] | {name, download_count}]}'
+npm run usage
 ```
 
-Counts are per release: an install keeps downloading from whichever release
-is latest, so after a new release the counts start again on that one.
-Unpinned `npx` installs are counted but never shown the notice. Turning the
-check off (`GARMIN_MCP_NO_UPDATE_CHECK=1`) also removes an install from the
-counts.
+It fetches the `stats` branch and prints, per install type and in total:
+daily active installs (last 14 days), weekly (last 8 ISO weeks), monthly,
+DAU/MAU, `.mcpb` downloads per week, and a one-line summary. Counts are summed
+across releases, since a new release mid-period splits that period's
+downloads between two tags. `npm run usage -- --file downloads.csv` reads a
+local copy instead.
+
+The `stats` branch is written only by `.github/workflows/stats.yml`, which
+runs daily at 00:05 UTC (or by hand: Actions → Usage stats → Run workflow).
+It appends GitHub's download count for every release file to
+`stats/downloads.csv`. Don't commit to that branch by hand, and don't merge it
+into main: it has no shared history with it.
 
 One-time setup: on npmjs.com, open the `garmin-mcp` package's settings and add
 a trusted publisher for GitHub Actions with this repository and the workflow

@@ -41,7 +41,7 @@
 		"update_check": {
 			"type": "boolean",
 			"title": "Check for updates",
-			"description": "Let Claude tell you when a new version is out.",
+			"description": "Check for updates and send usage counts. Nothing about you or your Garmin data is sent.",
 			"default": true,
 			"required": false
 		}
