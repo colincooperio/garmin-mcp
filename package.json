@@ -46,6 +46,7 @@
 		"check": "npm run types && tsc --noEmit && mcpb validate mcpb/manifest.json && npm test && npm run test:e2e",
 		"setup": "node scripts/setup.mjs",
 		"update": "node scripts/update.mjs",
+		"usage": "node --experimental-strip-types --no-warnings scripts/usage.mjs",
 		"deploy": "npm run check && wrangler deploy",
 		"tail": "wrangler tail",
 		"stdio": "node --experimental-strip-types --no-warnings src/stdio.ts",

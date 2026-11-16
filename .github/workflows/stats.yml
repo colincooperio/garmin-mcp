@@ -1,0 +1,66 @@
+name: Usage stats
+
+# Once a day, records GitHub's download count for every file attached to every
+# release, appending one row per file to stats/downloads.csv on the "stats"
+# branch (created, with no history, the first time). npm run usage reads it.
+# The counts are anonymous: GitHub only counts downloads of public files.
+# Only ever pushes to "stats"; never touches main.
+on:
+  schedule:
+    - cron: "5 0 * * *" # 00:05 UTC, just after each UTC day ends
+  workflow_dispatch:
+
+permissions:
+  contents: write # push to the stats branch
+
+concurrency:
+  group: stats
+  cancel-in-progress: false
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Fetch download counts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | .tag_name as $tag | .assets[] | "\($tag),\(.name),\(.download_count)"' \
+            > "$RUNNER_TEMP/rows.csv"
+          if [ ! -s "$RUNNER_TEMP/rows.csv" ]; then
+            echo "::error::GitHub returned no release assets; nothing recorded."
+            exit 1
+          fi
+          wc -l < "$RUNNER_TEMP/rows.csv"
+
+      - name: Append them to stats/downloads.csv on the stats branch
+        run: |
+          set -euo pipefail
+          today="$(date -u +%F)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin stats > /dev/null; then
+            git fetch --quiet --depth=1 origin stats
+            git switch --quiet -c stats FETCH_HEAD
+          else
+            git switch --quiet --orphan stats
+          fi
+          mkdir -p stats
+          file=stats/downloads.csv
+          [ -f "$file" ] || echo "date,tag,asset,download_count" > "$file"
+          # A second run on the same day (a manual one) replaces that day's rows.
+          grep -v "^$today," "$file" > "$RUNNER_TEMP/kept.csv" || true
+          { cat "$RUNNER_TEMP/kept.csv"; sed "s/^/$today,/" "$RUNNER_TEMP/rows.csv"; } > "$file"
+          git add "$file"
+          if git diff --cached --quiet; then
+            echo "No change."
+            exit 0
+          fi
+          git commit --quiet -m "Download counts for $today"
+          git push origin HEAD:refs/heads/stats
