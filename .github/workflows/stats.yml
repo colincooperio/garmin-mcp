@@ -5,9 +5,16 @@ name: Usage stats
 # branch (created, with no history, the first time). npm run usage reads it.
 # The counts are anonymous: GitHub only counts downloads of public files.
 # Only ever pushes to "stats"; never touches main.
+#
+# GitHub delays, and sometimes drops, scheduled runs, most of all near the top
+# of the hour. So it's scheduled off the hour, with a back-up run six hours
+# later; a scheduled run that finds today's (UTC) snapshot already recorded
+# does nothing. A manual run always records another snapshot; npm run usage
+# uses the latest one for each date.
 on:
   schedule:
-    - cron: "5 0 * * *" # 00:05 UTC, just after each UTC day ends
+    - cron: "17 0 * * *" # 00:17 UTC, just after each UTC day ends
+    - cron: "17 6 * * *" # back-up, in case that one is dropped
   workflow_dispatch:
 
 permissions:
@@ -40,9 +47,12 @@ jobs:
           wc -l < "$RUNNER_TEMP/rows.csv"
 
       - name: Append them to stats/downloads.csv on the stats branch
+        env:
+          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          today="$(date -u +%F)"
+          now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          today="${now%%T*}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git ls-remote --exit-code --heads origin stats > /dev/null; then
@@ -53,14 +63,23 @@ jobs:
           fi
           mkdir -p stats
           file=stats/downloads.csv
-          [ -f "$file" ] || echo "date,tag,asset,download_count" > "$file"
-          # A second run on the same day (a manual one) replaces that day's rows.
-          grep -v "^$today," "$file" > "$RUNNER_TEMP/kept.csv" || true
-          { cat "$RUNNER_TEMP/kept.csv"; sed "s/^/$today,/" "$RUNNER_TEMP/rows.csv"; } > "$file"
+          header="date,tag,asset,download_count,taken_at"
+          if [ ! -f "$file" ]; then
+            echo "$header" > "$file"
+          elif [ "$(head -n 1 "$file")" = "date,tag,asset,download_count" ]; then
+            # Rows from before taken_at keep four columns; npm run usage dates them by their commit.
+            { echo "$header"; tail -n +2 "$file"; } > "$RUNNER_TEMP/migrated.csv"
+            mv "$RUNNER_TEMP/migrated.csv" "$file"
+          fi
+          if [ "$EVENT" = "schedule" ] && grep -q "^$today," "$file"; then
+            echo "Already have a snapshot for $today; nothing to do."
+            exit 0
+          fi
+          sed "s/^/$today,/; s/\$/,$now/" "$RUNNER_TEMP/rows.csv" >> "$file"
           git add "$file"
           if git diff --cached --quiet; then
             echo "No change."
             exit 0
           fi
-          git commit --quiet -m "Download counts for $today"
+          git commit --quiet -m "Download counts for $now"
           git push origin HEAD:refs/heads/stats

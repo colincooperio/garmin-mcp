@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { describe, it } from "node:test";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, describe, it } from "node:test";
 // @ts-expect-error: plain .mjs script without type declarations
 import { buildReport, formatReport, increase, mondayOf, parseCsv, snapshots, summaryLine } from "../scripts/usage.mjs";
 
@@ -135,13 +138,71 @@ describe("npm run usage", () => {
 describe("stats workflow", () => {
 	const stats = readFileSync(new URL("../.github/workflows/stats.yml", import.meta.url), "utf8");
 
-	it("runs daily at 00:05 UTC and by hand, may only write contents, and only pushes the stats branch", () => {
-		assert.match(stats, /cron: "5 0 \* \* \*"/);
+	it("runs daily at 00:17 UTC with a 06:17 back-up, and by hand; may only write contents, and only pushes the stats branch", () => {
+		const crons = [...stats.matchAll(/cron: "([^"]+)"/g)].map((m) => m[1]);
+		assert.deepEqual(crons, ["17 0 * * *", "17 6 * * *"]);
 		assert.match(stats, /workflow_dispatch:/);
 		assert.match(stats, /permissions:\n {2}contents: write # push to the stats branch\n\n/);
 		const pushes = stats.match(/git push .*/g);
 		assert.deepEqual(pushes, ["git push origin HEAD:refs/heads/stats"]);
-		assert.match(stats, /stats\/downloads\.csv/);
-		assert.match(stats, /"date,tag,asset,download_count"/);
+		assert.match(stats, /EVENT: \$\{\{ github\.event_name \}\}/);
+	});
+
+	/** The "Append them" step's script, run against a scratch origin as each event would. */
+	const script = (() => {
+		const step = stats.slice(stats.indexOf("- name: Append them"));
+		const body = step.slice(step.indexOf("run: |") + "run: |".length).split("\n").slice(1);
+		return body.map((l) => l.replace(/^ {10}/, "")).join("\n");
+	})();
+	const sh = (cwd: string, cmd: string, env: Record<string, string> = {}) =>
+		execFileSync("bash", ["-c", cmd], { cwd, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", ...env }, encoding: "utf8" });
+	const dirs: string[] = [];
+	after(() => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
+	function scratch() {
+		const dir = mkdtempSync(join(tmpdir(), "stats-wf-"));
+		dirs.push(dir);
+		sh(dir, "git init -q --bare origin.git && git init -q -b main seed && cd seed && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init && git push -q ../origin.git main");
+		writeFileSync(join(dir, "rows.csv"), "v1.4.2,latest-npx.json,5\nv1.4.2,weekly-npx.json,3\n");
+		/** One workflow run: a fresh checkout of main, then the step. */
+		const run = (event: string) => {
+			const work = mkdtempSync(join(dir, "run-"));
+			sh(work, `git clone -q ../origin.git . && git switch -q main`);
+			return sh(work, script, { EVENT: event, RUNNER_TEMP: dir });
+		};
+		const csv = () => sh(dir, "git --git-dir=origin.git show stats:stats/downloads.csv");
+		const commits = () => Number(sh(dir, "git --git-dir=origin.git rev-list --count stats").trim());
+		return { dir, run, csv, commits };
+	}
+
+	it("a scheduled run records once per UTC day; a manual run always records another snapshot", () => {
+		const { run, csv, commits } = scratch();
+		run("schedule");
+		const first = csv().trim().split("\n");
+		assert.equal(first[0], "date,tag,asset,download_count,taken_at");
+		assert.equal(first.length, 3);
+		const m = /^(\d{4}-\d{2}-\d{2}),v1\.4\.2,latest-npx\.json,5,(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}Z$/.exec(first[1]);
+		assert.ok(m, first[1]);
+		assert.equal(m[1], m[2], "dated by the UTC day it was taken");
+
+		assert.match(run("schedule"), /Already have a snapshot for \d{4}-\d{2}-\d{2}; nothing to do\./, "the back-up run");
+		assert.equal(commits(), 1);
+
+		run("workflow_dispatch");
+		assert.equal(csv().trim().split("\n").length, 5, "manual: a second snapshot, nothing replaced");
+		assert.equal(commits(), 2);
+	});
+
+	it("moves an existing file to the new header, keeping its older four-column rows", () => {
+		const { dir, run, csv } = scratch();
+		sh(
+			dir,
+			"git init -q -b stats old && cd old && mkdir stats && printf 'date,tag,asset,download_count\\n2026-11-16,v1.4.2,latest-npx.json,1\\n' > stats/downloads.csv " +
+				"&& git add . && git -c user.name=t -c user.email=t@t commit -q -m old && git push -q ../origin.git stats",
+		);
+		run("schedule");
+		const lines = csv().trim().split("\n");
+		assert.equal(lines[0], "date,tag,asset,download_count,taken_at");
+		assert.equal(lines[1], "2026-11-16,v1.4.2,latest-npx.json,1");
+		assert.equal(lines.length, 4);
 	});
 });
