@@ -275,12 +275,12 @@ describe("UpdateCheck", () => {
 		assert.equal(updateCheckDisabled(undefined, "${user_config.update_check}"), false, "an unsubstituted placeholder leaves it on");
 	});
 
-	it("unpinned npx: checked (so it's counted) but never told", async () => {
-		const { u, gh } = checker({ install: { type: "npx", pinned: false } });
+	it("unpinned npx: checked (so it's counted) and told to restart the client", async () => {
+		const { u, gh } = checker({ install: { type: "npx", pinned: false, spec: "garmin-mcp@latest" } });
 		await u.refresh();
 		assert.deepEqual(gh.urls, ["https://github.com/colincooperio/garmin-mcp/releases/latest/download/latest-npx.json"]);
-		assert.equal(await u.notice(), undefined);
-		assert.equal(u.instructionsLine(), undefined);
+		assert.equal((await u.notice())?.how_to_update, "Restart your client to update.");
+		assert.match(u.instructionsLine() ?? "", /An update is available/);
 	});
 
 	it("gives one instruction per install type", () => {
@@ -291,6 +291,12 @@ describe("UpdateCheck", () => {
 			"Change garmin-mcp@1.4.0 to garmin-mcp@1.5.0 in your MCP config, then restart the app.",
 		);
 		assert.match(howToUpdate({ type: "npx", pinned: true }, "1.5.0"), /^Change the pinned garmin-mcp@<version> to garmin-mcp@1\.5\.0/);
+		assert.equal(howToUpdate({ type: "npx", pinned: false, spec: "garmin-mcp@latest" }, "1.5.0"), "Restart your client to update.");
+		assert.equal(howToUpdate({ type: "npx", pinned: false }, "1.5.0"), "Restart your client to update.", "spec unknown");
+		assert.equal(
+			howToUpdate({ type: "npx", pinned: false, spec: "garmin-mcp" }, "1.5.0"),
+			"In your MCP config, change garmin-mcp to garmin-mcp@latest (npx keeps reusing the copy it has otherwise), then restart your client to update.",
+		);
 		assert.equal(howToUpdate({ type: "global" }, "1.5.0"), "Run npm install -g garmin-mcp@1.5.0, then restart the app.");
 	});
 });
@@ -301,14 +307,22 @@ describe("detectInstall", () => {
 	it("tells unpinned npx (garmin-mcp, garmin-mcp@latest) from pinned, the way npm names its cache folders", async () => {
 		// libnpmexec: sha512 of the spec, first 16 hex characters (checked against Node's own hash).
 		assert.equal(await npxHash("garmin-mcp"), createHash("sha512").update("garmin-mcp").digest("hex").slice(0, 16));
-		assert.deepEqual(await detectInstall({}, await npxPath("garmin-mcp"), "1.4.0"), { type: "npx", pinned: false });
-		assert.deepEqual(await detectInstall({}, await npxPath("garmin-mcp@latest"), "1.4.0"), { type: "npx", pinned: false });
-		assert.deepEqual(await detectInstall({}, await npxPath("garmin-mcp@1.4.0"), "1.4.0"), { type: "npx", pinned: true, spec: "garmin-mcp@1.4.0" });
-		const win = (await npxPath("garmin-mcp@1.4.0")).replace(/\//g, "\\");
-		assert.deepEqual(await detectInstall({}, win, "1.4.0"), { type: "npx", pinned: true, spec: "garmin-mcp@1.4.0" }, "Windows paths");
+		assert.deepEqual(await detectInstall({}, await npxPath("garmin-mcp"), "1.4.2"), { type: "npx", pinned: false, spec: "garmin-mcp" });
+		assert.deepEqual(await detectInstall({}, await npxPath("garmin-mcp@latest"), "1.4.2"), { type: "npx", pinned: false, spec: "garmin-mcp@latest" });
+		assert.deepEqual(await detectInstall({}, await npxPath("garmin-mcp@1.4.2"), "1.4.2"), { type: "npx", pinned: true, spec: "garmin-mcp@1.4.2" });
+		const win = (await npxPath("garmin-mcp@1.4.2")).replace(/\//g, "\\");
+		assert.deepEqual(await detectInstall({}, win, "1.4.2"), { type: "npx", pinned: true, spec: "garmin-mcp@1.4.2" }, "Windows paths");
+		const latestWin = (await npxPath("garmin-mcp@latest")).replace(/\//g, "\\");
+		assert.deepEqual(await detectInstall({}, latestWin, "1.4.2"), { type: "npx", pinned: false, spec: "garmin-mcp@latest" }, "Windows paths");
+		// Each gets the right notice and the npx counter.
+		const latest = (await detectInstall({}, await npxPath("garmin-mcp@latest"), "1.4.2"))!;
+		assert.equal(howToUpdate(latest, "1.5.0"), "Restart your client to update.");
+		assert.equal(checkUrl(latest), "https://github.com/colincooperio/garmin-mcp/releases/latest/download/latest-npx.json");
+		assert.match(howToUpdate((await detectInstall({}, await npxPath("garmin-mcp"), "1.4.2"))!, "1.5.0"), /change garmin-mcp to garmin-mcp@latest/);
+		assert.match(howToUpdate((await detectInstall({}, await npxPath("garmin-mcp@1.4.2"), "1.4.2"))!, "1.5.0"), /^Change garmin-mcp@1\.4\.2 to garmin-mcp@1\.5\.0/);
 	});
 
-	it("falls back to unpinned (counted, no notice) whenever npx detection is uncertain", async () => {
+	it("falls back to unpinned (counted, told to restart) whenever npx detection is uncertain", async () => {
 		const unpinned = { type: "npx", pinned: false };
 		// A range, another version's pin, several packages in one npx call.
 		assert.deepEqual(await detectInstall({}, await npxPath("garmin-mcp@^1.3"), "1.4.0"), unpinned);
@@ -328,11 +342,11 @@ describe("detectInstall", () => {
 		} finally {
 			(subtle as any).digest = digest;
 		}
-		// And the result is what the notice logic expects: counted, never told.
+		// And the result is what the notice logic expects: counted, told to restart.
 		const { u, gh } = checker({ install: unpinned as Install });
 		await u.refresh();
 		assert.equal(gh.urls.length, 1);
-		assert.equal(await u.notice(), undefined);
+		assert.equal((await u.notice())?.how_to_update, "Restart your client to update.");
 	});
 
 	it("knows the Desktop extension, other npm installs, and skips source checkouts", async () => {

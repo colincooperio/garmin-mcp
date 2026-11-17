@@ -6,8 +6,9 @@
  * - npx: the script lives in npm's npx cache, ~/.npm/_npx/<hash>/node_modules/.
  *   npm names that folder after the first 16 hex characters of the SHA-512 of
  *   the package spec typed (libnpmexec), so hashing "garmin-mcp@<version>"
- *   recognises a run pinned to this version. Anything else there counts as
- *   unpinned.
+ *   recognises a run pinned to this version, and "garmin-mcp" or
+ *   "garmin-mcp@latest" an unpinned one. Anything else there counts as
+ *   unpinned too.
  * - A global or other npm install: any other node_modules/garmin-mcp path.
  * - A source checkout (running src/*.ts or the repo's own dist/): no check.
  */
@@ -27,7 +28,11 @@ export async function npxHash(spec: string): Promise<string> {
  * matches "garmin-mcp@<this version>", the usual way to pin. Anything else
  * under npm's npx cache (a range such as @^1.3, several packages in one npx
  * call, a cache layout or hashing npm changes later, or an error working it
- * out) is treated as unpinned: counted, never shown a notice.
+ * out) is treated as unpinned: counted, and told to restart the client.
+ *
+ * Unpinned runs record whether the spec was "garmin-mcp@latest" or a bare
+ * "garmin-mcp": npx re-resolves @latest each time it starts, but reuses the
+ * copy in its cache for a bare name, so only @latest updates on a restart.
  */
 export async function detectInstall(env: Record<string, string | undefined>, scriptPath: string, current: string): Promise<Install | undefined> {
 	if (env.GARMIN_MCP_INSTALL === "mcpb") return { type: "mcpb" };
@@ -37,6 +42,9 @@ export async function detectInstall(env: Record<string, string | undefined>, scr
 		const hash = path.match(/\/_npx\/([0-9a-f]+)\//)?.[1];
 		try {
 			if (hash && (await npxHash(exact)) === hash) return { type: "npx", pinned: true, spec: exact };
+			for (const spec of [`${PKG}@latest`, PKG] as const) {
+				if (hash && (await npxHash(spec)) === hash) return { type: "npx", pinned: false, spec };
+			}
 		} catch {
 			// Can't tell: fall through to unpinned.
 		}

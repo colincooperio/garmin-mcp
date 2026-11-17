@@ -12,8 +12,9 @@
  *
  * When a newer version exists, the first tool result of each server session
  * (local) or each day (cloud) carries an update_available field with one
- * instruction for how this copy is installed. Unpinned npx installs are
- * checked (so they're counted) but never told: npx already fetches the latest.
+ * instruction for how this copy is installed. For unpinned npx
+ * (garmin-mcp@latest) that's just "restart your client": npx fetches the
+ * latest version when the client starts the server again.
  *
  * Shared by the Worker and the local server, so no Node-only imports here.
  * Never blocks a tool call and never throws: every failure is silent.
@@ -32,19 +33,19 @@ const CACHE_KEY = "garmin:update:latest:";
 const SHOWN_KEY = "garmin:update:shown:";
 
 /**
- * How this copy runs. `asset` picks the version file (and so the download
- * counter); `notify` is false for unpinned npx.
+ * How this copy runs. `assetFor` picks the version file (and so the
+ * download counter). Unpinned npx keeps the spec when it's known: a bare
+ * "garmin-mcp" doesn't update on a restart (npx reuses its cached copy).
  */
 export type Install =
 	| { type: "mcpb" }
 	| { type: "cloud" }
-	| { type: "npx"; pinned: false }
+	| { type: "npx"; pinned: false; spec?: "garmin-mcp" | "garmin-mcp@latest" }
 	| { type: "npx"; pinned: true; spec?: string }
 	| { type: "global" };
 
 export const assetFor = (install: Install) => (install.type === "global" ? "npx" : install.type);
 export const checkUrl = (install: Install) => `${RELEASES}/latest/download/latest-${assetFor(install)}.json`;
-export const notifies = (install: Install) => !(install.type === "npx" && !install.pinned);
 
 /** One instruction for updating this kind of install. */
 export function howToUpdate(install: Install, latest: string): string {
@@ -54,7 +55,12 @@ export function howToUpdate(install: Install, latest: string): string {
 		case "cloud":
 			return "Run npm run update in your garmin-mcp folder.";
 		case "npx":
-			return `Change ${install.pinned && install.spec ? install.spec : "the pinned garmin-mcp@<version>"} to garmin-mcp@${latest} in your MCP config, then restart the app.`;
+			if (!install.pinned) {
+				return install.spec === "garmin-mcp"
+					? "In your MCP config, change garmin-mcp to garmin-mcp@latest (npx keeps reusing the copy it has otherwise), then restart your client to update."
+					: "Restart your client to update.";
+			}
+			return `Change ${install.spec ?? "the pinned garmin-mcp@<version>"} to garmin-mcp@${latest} in your MCP config, then restart the app.`;
 		case "global":
 			return `Run npm install -g garmin-mcp@${latest}, then restart the app.`;
 	}
@@ -216,9 +222,9 @@ export class UpdateCheck {
 		return this.refreshing;
 	}
 
-	/** The newer version the last check found, if any and if this install is told about updates. */
+	/** The newer version the last check found, if any (and the check isn't off). */
 	newer(): { latest: string; url: string } | undefined {
-		if (this.o.disabled || !notifies(this.o.install)) return undefined;
+		if (this.o.disabled) return undefined;
 		const latest = this.cached?.latest;
 		if (!latest || compareSemver(latest, this.o.current) !== 1) return undefined;
 		return { latest, url: this.cached?.url ?? `${RELEASES}/latest` };

@@ -90,10 +90,11 @@ The release workflow also attaches, for each install type (`mcpb`, `npx`,
   (`src/usage.ts`).
 
 GitHub's download counts for these are the usage numbers. Unpinned `npx`
-installs are counted but never shown the update notice. Turning the check off
-(`GARMIN_MCP_NO_UPDATE_CHECK=1`, or the Desktop switch) removes an install
-from all of them. `test/release-assets.test.ts` fails if the release stops
-attaching a file the server downloads.
+installs (`garmin-mcp@latest`) are told to restart their client; a bare
+`garmin-mcp`, which `npx` never refreshes, is told to switch to `@latest`.
+Turning the check off (`GARMIN_MCP_NO_UPDATE_CHECK=1`, or the Desktop
+switch) removes an install from all of them. `test/release-assets.test.ts`
+fails if the release stops attaching a file the server downloads.
 
 ## Reading usage
 

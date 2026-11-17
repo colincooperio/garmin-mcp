@@ -184,7 +184,7 @@ runs the [`garmin-mcp`](https://www.npmjs.com/package/garmin-mcp) package with
 **Claude Code:**
 
 ```sh
-claude mcp add garmin --env GARMIN_API_KEY=<your key> -- npx -y garmin-mcp
+claude mcp add garmin --env GARMIN_API_KEY=<your key> -- npx -y garmin-mcp@latest
 ```
 
 **Cursor, VS Code and other apps** (or Claude Desktop, if you'd rather not
@@ -195,7 +195,7 @@ use the extension): add this to the app's MCP config:
 	"mcpServers": {
 		"garmin": {
 			"command": "npx",
-			"args": ["-y", "garmin-mcp"],
+			"args": ["-y", "garmin-mcp@latest"],
 			"env": {
 				"GARMIN_API_KEY": "<your key>"
 			}
@@ -214,7 +214,7 @@ config. Add this to `~/.codex/config.toml` (needs Node 22 or newer):
 ```toml
 [mcp_servers.garmin]
 command = "npx"
-args = ["-y", "garmin-mcp"]
+args = ["-y", "garmin-mcp@latest"]
 env = { GARMIN_API_KEY = "<your key>" }
 ```
 
@@ -226,7 +226,7 @@ newer):
 ```json
 "garmin": {
 	"command": "npx",
-	"args": ["-y", "garmin-mcp"],
+	"args": ["-y", "garmin-mcp@latest"],
 	"env": { "GARMIN_API_KEY": "<your key>" }
 }
 ```
@@ -573,9 +573,11 @@ how to update your kind of install (see the update check in
 - Claude Desktop extension: download the new
   [garmin-mcp.mcpb](https://github.com/colincooperio/garmin-mcp/releases/latest/download/garmin-mcp.mcpb)
   from the latest release and double-click it.
-- Local with `npx`: `npx` fetches the latest version each time your AI app
-  starts the server, so just restart the app. To stay on a fixed version, use
-  `garmin-mcp@1.4.0` in place of `garmin-mcp` in your config.
+- Local with `npx`: just restart your AI app. With `garmin-mcp@latest` in
+  your config, `npx` fetches the newest version each time the app starts the
+  server. (A config with plain `garmin-mcp` keeps reusing the copy `npx`
+  already has: change it to `garmin-mcp@latest`.) To stay on a fixed version,
+  use `garmin-mcp@1.4.2` instead.
 - Cloud: run `npm run update` in the repo folder. It pulls the latest version,
   reinstalls, lists any new settings in `wrangler.example.jsonc` that your
   `wrangler.jsonc` lacks (it never edits your file), runs the tests and
