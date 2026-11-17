@@ -106,13 +106,18 @@ It fetches the `stats` branch and prints, per install type and in total:
 daily active installs (last 14 days), weekly (last 8 ISO weeks), monthly,
 DAU/MAU, `.mcpb` downloads per week, and a one-line summary. Counts are summed
 across releases, since a new release mid-period splits that period's
-downloads between two tags. `npm run usage -- --file downloads.csv` reads a
-local copy instead.
+downloads between two tags. A day whose window isn't about 24 hours is marked
+"(partial)"; the running week and month are "(so far)". It warns when the
+newest snapshot is more than 30 hours old. `npm run usage -- --file
+downloads.csv` reads a local copy instead.
 
 The `stats` branch is written only by `.github/workflows/stats.yml`, which
-runs daily at 00:05 UTC (or by hand: Actions → Usage stats → Run workflow).
-It appends GitHub's download count for every release file to
-`stats/downloads.csv`. Don't commit to that branch by hand, and don't merge it
+runs daily at 00:17 UTC with a back-up at 06:17 (a scheduled run skips a day
+that already has a snapshot), or by hand: Actions → Usage stats → Run
+workflow. It appends GitHub's download count for every release file, and when
+it was taken, to `stats/downloads.csv`. For day, week and month boundaries,
+`npm run usage` uses each date's snapshot taken closest to 00:00 UTC, so an
+extra manual run doesn't move them. Don't commit to that branch by hand, and don't merge it
 into main: it has no shared history with it.
 
 One-time setup: on npmjs.com, open the `garmin-mcp` package's settings and add
