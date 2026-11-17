@@ -579,8 +579,9 @@ how to update your kind of install (see the update check in
 - Cloud: run `npm run update` in the repo folder. It pulls the latest version,
   reinstalls, lists any new settings in `wrangler.example.jsonc` that your
   `wrangler.jsonc` lacks (it never edits your file), runs the tests and
-  deploys, then prints the old and new version. If a deploy goes wrong,
-  `npx wrangler rollback` returns to the previous one. Set up before 1.4.0?
+  deploys, then says which version is now deployed and which it replaced.
+  If a deploy goes wrong, `npx wrangler rollback` returns to the previous
+  one. Set up before 1.4.0?
   Run `git pull` and `npm install` once to get `npm run update`.
   `npm run update` also works on a fork: it pulls from
   colincooperio/garmin-mcp (added as the `upstream` remote) and never pushes.

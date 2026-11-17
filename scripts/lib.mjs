@@ -397,3 +397,41 @@ export function readPackageVersion(files) {
 		return undefined;
 	}
 }
+
+// ---- what's deployed ----------------------------------------------------------
+
+/**
+ * Git-ignored file in the repo root holding the version the last successful
+ * npm run setup or npm run update deployed, so npm run update can report on
+ * the Worker rather than on this folder.
+ */
+export const DEPLOYED = ".deployed-version";
+
+/** The version last deployed from this folder, or undefined if there's no (readable) record. */
+export function readDeployedVersion(files) {
+	try {
+		if (!files.exists(DEPLOYED)) return undefined;
+		const v = files.read(DEPLOYED).trim();
+		return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(v) ? v : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Records a successful deploy. Never throws: a missing record only makes the next report less specific. */
+export function recordDeployedVersion(files, version) {
+	if (!version) return;
+	try {
+		files.write(DEPLOYED, `${version}\n`);
+	} catch {
+		// Read-only folder or similar: carry on.
+	}
+}
+
+/** One line on what the Worker now runs, compared with the last recorded deploy. */
+export function deployedLine(previous, current) {
+	const now = current ?? "unknown";
+	if (!previous) return `Deployed ${now}.`;
+	if (previous === current) return `Redeployed ${now} (no change).`;
+	return `Deployed ${now} (was ${previous}).`;
+}

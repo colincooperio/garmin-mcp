@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { PassThrough, Writable } from "node:stream";
-import { askValid, describeFailure, makeIO, missingSettings, readKvId, readValue } from "../scripts/lib.mjs";
+import { askValid, DEPLOYED, deployedLine, describeFailure, makeIO, missingSettings, readDeployedVersion, readKvId, readValue } from "../scripts/lib.mjs";
 import { runSetup } from "../scripts/setup.mjs";
 import { NEW_REMOTE, runUpdate } from "../scripts/update.mjs";
 
@@ -155,6 +155,19 @@ describe("npm run setup", () => {
 		assert.equal(f.seen.find((s) => s.url.includes("cloudflare"))!.headers.Authorization, `Bearer ${CF_TOKEN}`);
 		assert.ok(w.calls.some((c) => c.args.includes("login") && c.inherit), "login runs interactively");
 		assert.ok(w.calls.at(-1)!.args.includes("deploy") && w.calls.at(-1)!.inherit, "deploys last");
+	});
+
+	it("records the deployed version after a successful deploy, and not after a failed one", async () => {
+		const ok = world(freshHandlers(), { "package.json": JSON.stringify({ name: "garmin-mcp", version: "1.4.3" }) });
+		await runSetup({ run: ok.run, io: io(["", "octo-cat", "", GH_ID, GH_SECRET, GARMIN_KEY]), files: ok.files, fetch: fakeFetch().fetch, nodeVersion: "22.12.0", randomHex: () => "c".repeat(64) });
+		assert.equal(ok.store.get(DEPLOYED), "1.4.3\n");
+
+		const failed = world(freshHandlers({ "wrangler deploy": { code: 1 } }), { "package.json": JSON.stringify({ name: "garmin-mcp", version: "1.4.3" }) });
+		await assert.rejects(
+			runSetup({ run: failed.run, io: io(["", "octo-cat", "", GH_ID, GH_SECRET, GARMIN_KEY]), files: failed.files, fetch: fakeFetch().fetch, nodeVersion: "22.12.0", randomHex: () => "c".repeat(64) }),
+			(err: any) => err.step === "deploy",
+		);
+		assert.equal(failed.store.has(DEPLOYED), false);
 	});
 
 	it("is safe to rerun: skips what's done and asks before replacing secrets", async () => {
@@ -460,7 +473,7 @@ describe("npm run update", () => {
 	it("offers to move the remote, pulls, installs, checks, deploys and prints both versions", async () => {
 		const w = updateWorld({ "git remote get-url origin": { code: 0, stdout: "git@github.com:cacooper16/garmin-cloud-mcp.git\n" }, "git remote set-url": { code: 0 } });
 		const term = io([""]);
-		assert.deepEqual(await runUpdate({ run: w.run, io: term, files: w.files }), { from: "1.3.0", to: "1.4.0" });
+		assert.deepEqual(await runUpdate({ run: w.run, io: term, files: w.files }), { from: "1.3.0", to: "1.4.0", previous: undefined });
 		assert.deepEqual(
 			w.calls.map((c) => (c.cmd === "npx" && c.args[0] === "--no" ? c.args.slice(2) : [c.cmd, ...c.args]).join(" ")),
 			[
@@ -475,27 +488,51 @@ describe("npm run update", () => {
 				"wrangler deploy",
 			],
 		);
-		assert.ok(term.printed.some((p) => p.includes("Updated: 1.3.0 -> 1.4.0")));
+		const out = term.printed.join("\n");
+		assert.match(out, /\nDeployed 1\.4\.0\.\nPulled new code: 1\.3\.0 -> 1\.4\.0\./, "no record yet: just the version");
+		assert.equal(w.store.get(DEPLOYED), "1.4.0\n", "recorded for next time");
 		assert.ok(term.printed.some((p) => p.includes("npx wrangler rollback")));
 		assert.equal(w.store.get("wrangler.jsonc"), userConfig, "never edits wrangler.jsonc");
 	});
 
-	it("says it's already up to date when the pull brought nothing, and still redeploys", async () => {
-		const w = updateWorld({ "git pull --ff-only": { code: 0 } }, { "package.json": pkg("1.4.0") });
+	it("reports on the Worker, not the folder: the pull brought nothing, but the Worker was on an older version", async () => {
+		// The folder was already on 1.4.0 (pulled by hand, say), but the Worker last got 1.3.0.
+		const w = updateWorld({ "git pull --ff-only": { code: 0 } }, { "package.json": pkg("1.4.0"), [DEPLOYED]: "1.3.0\n" });
 		const term = io([]);
-		assert.deepEqual(await runUpdate({ run: w.run, io: term, files: w.files }), { from: "1.4.0", to: "1.4.0" });
+		assert.deepEqual(await runUpdate({ run: w.run, io: term, files: w.files }), { from: "1.4.0", to: "1.4.0", previous: "1.3.0" });
 		const out = term.printed.join("\n");
-		assert.match(out, /Already up to date: redeployed 1\.4\.0\./);
-		assert.doesNotMatch(out, /Updated:/);
+		assert.match(out, /\nDeployed 1\.4\.0 \(was 1\.3\.0\)\.\n/);
+		assert.doesNotMatch(out, /Pulled new code|Already up to date|Redeployed/);
 		assert.match(out, /npx wrangler rollback/);
-		assert.ok(w.calls.some((c) => c.args.includes("deploy")));
+		assert.equal(w.store.get(DEPLOYED), "1.4.0\n");
 	});
 
-	it("says Updated when the pull brought commits but the version is the same", async () => {
-		const w = updateWorld({}, { "package.json": pkg("1.4.0") });
+	it("says Redeployed (no change) when the Worker already had this version", async () => {
+		const w = updateWorld({ "git pull --ff-only": { code: 0 } }, { "package.json": pkg("1.4.0"), [DEPLOYED]: "1.4.0\n" });
 		const term = io([]);
 		await runUpdate({ run: w.run, io: term, files: w.files });
-		assert.match(term.printed.join("\n"), /Updated: 1\.4\.0 -> 1\.4\.0\./);
+		const out = term.printed.join("\n");
+		assert.match(out, /\nRedeployed 1\.4\.0 \(no change\)\.\n/);
+		assert.doesNotMatch(out, /Pulled new code/);
+		assert.match(out, /npx wrangler rollback/);
+		assert.ok(w.calls.some((c) => c.args.includes("deploy")), "still redeploys");
+	});
+
+	it("still notes pulled commits when the version is the same", async () => {
+		const w = updateWorld({}, { "package.json": pkg("1.4.0"), [DEPLOYED]: "1.4.0\n" });
+		const term = io([]);
+		await runUpdate({ run: w.run, io: term, files: w.files });
+		assert.match(term.printed.join("\n"), /\nRedeployed 1\.4\.0 \(no change\)\.\nPulled new code: 1\.4\.0 -> 1\.4\.0\./);
+	});
+
+	it("deployed version: unreadable or junk records count as no record", () => {
+		const files = (text?: string) => ({ exists: () => text !== undefined, read: () => text!, write() {} });
+		assert.equal(readDeployedVersion(files()), undefined);
+		assert.equal(readDeployedVersion(files("1.4.2\n")), "1.4.2");
+		assert.equal(readDeployedVersion(files("<<<<<<< HEAD\n")), undefined);
+		assert.equal(deployedLine(undefined, "1.4.2"), "Deployed 1.4.2.");
+		assert.equal(deployedLine("1.4.1", "1.4.2"), "Deployed 1.4.2 (was 1.4.1).");
+		assert.equal(deployedLine("1.4.2", "1.4.2"), "Redeployed 1.4.2 (no change).");
 	});
 
 	it("refuses to continue with uncommitted changes to tracked files", async () => {
@@ -529,12 +566,13 @@ describe("npm run update", () => {
 		assert.equal(w.store.get("wrangler.jsonc"), old, "never edits wrangler.jsonc");
 	});
 
-	it("explains how to roll back when the deploy fails", async () => {
-		const w = updateWorld({ "wrangler deploy": { code: 1 } });
+	it("explains how to roll back when the deploy fails, and keeps the old record", async () => {
+		const w = updateWorld({ "wrangler deploy": { code: 1 } }, { [DEPLOYED]: "1.3.0\n" });
 		await assert.rejects(runUpdate({ run: w.run, io: io([]), files: w.files }), (err: any) => {
 			assert.match(describeFailure(err), /^\nStep 6 \(deploy\) failed: wrangler deploy failed .*\nTo fix it: run npx wrangler rollback/s);
 			return true;
 		});
+		assert.equal(w.store.get(DEPLOYED), "1.3.0\n", "a failed deploy isn't recorded");
 	});
 
 	const commands = (w: ReturnType<typeof world>) => w.calls.map((c) => (c.cmd === "npx" && c.args[0] === "--no" ? c.args.slice(2) : [c.cmd, ...c.args]).join(" "));
@@ -560,7 +598,7 @@ describe("npm run update", () => {
 			"git merge --ff-only upstream/main": () => (w.store.set("package.json", pkg("1.4.0")), (commit = "ccc333"), { code: 0 }),
 		});
 		const term = io([]);
-		assert.deepEqual(await runUpdate({ run: w.run, io: term, files: w.files }), { from: "1.3.0", to: "1.4.0" });
+		assert.deepEqual(await runUpdate({ run: w.run, io: term, files: w.files }), { from: "1.3.0", to: "1.4.0", previous: undefined });
 		assert.deepEqual(commands(w), [
 			"git remote get-url origin",
 			"git remote get-url upstream",
@@ -577,11 +615,11 @@ describe("npm run update", () => {
 		]);
 		const out = term.printed.join("\n");
 		assert.match(out, /git@github\.com:someone\/garmin-mcp\.git is a fork; updates come from https:\/\/github\.com\/colincooperio\/garmin-mcp\.git/);
-		assert.match(out, /Updated: 1\.3\.0 -> 1\.4\.0\./);
+		assert.match(out, /Pulled new code: 1\.3\.0 -> 1\.4\.0\./);
 		assert.deepEqual(term.asked, [], "no questions");
 	});
 
-	it("a fork that already has upstream: doesn't add it again, and says Already up to date when nothing moved", async () => {
+	it("a fork that already has upstream: doesn't add it again, and notes no pull when nothing moved", async () => {
 		const w = updateWorld(
 			{
 				"git remote get-url origin": { code: 0, stdout: "https://github.com/someone/garmin-mcp\n" },
@@ -595,7 +633,8 @@ describe("npm run update", () => {
 		const term = io([]);
 		await runUpdate({ run: w.run, io: term, files: w.files });
 		assert.ok(!commands(w).some((c) => c.startsWith("git remote add")));
-		assert.match(term.printed.join("\n"), /Already up to date: redeployed 1\.4\.0\./);
+		assert.match(term.printed.join("\n"), /\nDeployed 1\.4\.0\.\n/);
+		assert.doesNotMatch(term.printed.join("\n"), /Pulled new code/);
 	});
 
 	it("a fork with changes of its own: stops before deploying and says how to sync", async () => {

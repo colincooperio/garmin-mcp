@@ -28,7 +28,9 @@ import {
 	parseJson,
 	parseKvId,
 	readKvId,
+	readPackageVersion,
 	readValue,
+	recordDeployedVersion,
 	replaceValue,
 	setAccountId,
 	setKvId,
@@ -284,6 +286,8 @@ export async function runSetup(ctx) {
 	if (deployed.code !== 0) {
 		throw fail(11, "deploy", "wrangler deploy failed (its output is above).", "fix what it reports, then run npx wrangler deploy.");
 	}
+	// So npm run update can say what the Worker ran before (see .deployed-version).
+	recordDeployedVersion(files, readPackageVersion(files));
 
 	const url = `${base}/mcp`;
 	io.print(`\nDone. Your server URL is:\n\n   ${url}\n`);

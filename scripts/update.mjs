@@ -6,7 +6,22 @@
 // Works on forks too: when origin isn't colincooperio/garmin-mcp, it adds that
 // as "upstream" (if missing), fetches it and fast-forwards from upstream/main.
 import { fileURLToPath } from "node:url";
-import { CONFIG, confirm, describeFailure, EXAMPLE, makeFiles, makeIO, makeRunner, missingSettings, readPackageVersion, StepError, wrangler } from "./lib.mjs";
+import {
+	CONFIG,
+	confirm,
+	deployedLine,
+	describeFailure,
+	EXAMPLE,
+	makeFiles,
+	makeIO,
+	makeRunner,
+	missingSettings,
+	readDeployedVersion,
+	readPackageVersion,
+	recordDeployedVersion,
+	StepError,
+	wrangler,
+} from "./lib.mjs";
 
 export const OLD_REMOTE = /github\.com[:/]cacooper16\/garmin-cloud-mcp(\.git)?\/?$/i;
 export const NEW_REMOTE = "https://github.com/colincooperio/garmin-mcp.git";
@@ -21,7 +36,11 @@ async function head(run) {
 	return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : undefined;
 }
 
-/** ctx: { run, io, files }. Returns { from, to } versions. Throws StepError when a step fails. */
+/**
+ * ctx: { run, io, files }. Returns { from, to, previous }: this folder's version
+ * before and after the pull, and the version last deployed from it (undefined
+ * if never recorded). Throws StepError when a step fails.
+ */
 export async function runUpdate(ctx) {
 	const { io, files, run } = ctx;
 	const step = (n, title) => io.print(`\n${n}. ${title}`);
@@ -131,6 +150,7 @@ export async function runUpdate(ctx) {
 	const check = await run("npm", ["run", "check"], { inherit: true });
 	if (check.code !== 0) throw new StepError("tests", "npm run check failed (its output is above). Nothing was deployed.", "run npm run check to see the failure; if it isn't something you changed, open an issue with its output.", 5);
 	step(6, "Deploying");
+	const previous = readDeployedVersion(files);
 	const deploy = await wrangler(ctx, ["deploy"], { inherit: true });
 	if (deploy.code !== 0) {
 		throw new StepError(
@@ -141,10 +161,14 @@ export async function runUpdate(ctx) {
 		);
 	}
 
-	if (unchanged) io.print(`\nAlready up to date: redeployed ${to ?? "unknown"}.`);
-	else io.print(`\nUpdated: ${from ?? "unknown"} -> ${to ?? "unknown"}.`);
+	recordDeployedVersion(files, to);
+
+	// What the Worker runs now, compared with the last deploy from this folder;
+	// then, separately, whether this run pulled new code into the folder.
+	io.print(`\n${deployedLine(previous, to)}`);
+	if (!unchanged) io.print(`Pulled new code: ${from ?? "unknown"} -> ${to ?? "unknown"}.`);
 	io.print("If anything misbehaves, npx wrangler rollback returns to the previous deployment.");
-	return { from, to };
+	return { from, to, previous };
 }
 
 async function main() {
