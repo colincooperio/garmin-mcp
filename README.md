@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/colincooperio/garmin-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/colincooperio/garmin-mcp/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/garmin-mcp.svg)](https://www.npmjs.com/package/garmin-mcp)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![colincooperio/garmin-mcp MCP server](https://glama.ai/mcp/servers/colincooperio/garmin-mcp/badges/score.svg)](https://glama.ai/mcp/servers/colincooperio/garmin-mcp)
 
 Ask your AI assistant about your training, sleep and recovery, using your own
 Garmin data. It's an [MCP](https://modelcontextprotocol.io) server that gives
@@ -48,6 +48,8 @@ Ask things like:
 - _"What are my 5k and 10k PBs this year, and what could I run a half in?"_
 - _"Am I building my mileage too fast?"_
 - _"Do I run worse after a bad night's sleep?"_
+- _"Is my bench press going up?"_
+- _"What was my best 20-minute power on Sunday's ride?"_
 
 Ask in any language: Claude answers in yours.
 
@@ -77,7 +79,7 @@ recent runs:
 | Garmin key stored only on your computer                 |  ✅   |       |
 | Nothing listening on the network                        |  ✅   |       |
 | Free to run                                             |  ✅   |  ✅   |
-| All 28 tools and 5 prompts                              |  ✅   |  ✅   |
+| All 29 tools and 6 prompts                              |  ✅   |  ✅   |
 
 ### Still deciding?
 
@@ -444,15 +446,16 @@ heart rate. This server does the heavy lifting itself:
 - **Things Garmin's API doesn't give you directly:** per-km/mile splits and
   best efforts (computed from the activity's FIT file in the server, so a
   two-hour run comes back as a few KB of tables, not 7,000 samples), training
-  load (acute:chronic ratio, and its trend week by week), personal bests across
-  runs with race time estimates, how sleep, HRV and Body Battery relate to your
+  load (acute:chronic ratio, and its trend week by week), cycling power (best
+  5 s to 60 min, normalized power, and TSS from your FTP), strength progress per
+  exercise, personal bests across runs with race time estimates, how sleep, HRV and Body Battery relate to your
   running, time in heart-rate zones (for one activity, the
   watch's own figures with the zones you had then, so they match Garmin
   Connect), weekday patterns, distance-weighted pace, side-by-side activity
   comparison.
 - **Prompt templates** for apps that support MCP prompts (such as Claude's
   connector menu): _Am I ready to train today?_, _Sleep report_, _Training
-  review_, _Weekly check-in_, _Compare recent sessions_.
+  review_, _Weekly check-in_, _Compare recent sessions_, _Strength review_.
 
 ## Tools
 
@@ -469,8 +472,9 @@ on its own means "since then": the range ends today.
 | `summarize_wellness`    | Sleep, resting HR, HRV, stress, steps and Body Battery trends: by week, month, weekday or overall                                                                                                              |
 | `summarize_activities`  | Training totals: distance, time, pace, HR, training load and time in HR zones, by week, month, weekday or overall. By week or month, also the load trend: change on the previous period, acute:chronic ratio and flags for a fast build |
 | `compare_activities`    | 2–5 activities side by side                                                                                                                                                                                    |
-| `get_activity_analysis` | One activity from its original FIT file: per-km or per-mile splits, the watch's laps and workout reps, best efforts (1 km to marathon), time in HR zones as the watch recorded it, first- vs second-half drift |
+| `get_activity_analysis` | One activity from its original FIT file: per-km or per-mile splits, the watch's laps and workout reps, best efforts (1 km to marathon), time in HR zones as the watch recorded it, first- vs second-half drift, and power (average, normalized, best 5 s to 60 min; for rides, IF and TSS if you give your FTP) |
 | `get_personal_bests`    | Your fastest 1 km, 1 mile, 5 km, 10 km, half and marathon across many activities, with the next two best, plus race time estimates (Riegel). Computed from your activity files, not Garmin's official records |
+| `get_strength_progress` | "Is my bench going up?": sets, reps, max weight and volume per exercise and session, with the trend; optionally each session's sets, top set and estimated 1RM. See [Strength training](#strength-training) |
 | `analyze_recovery_impact` | Whether sleep, HRV or Body Battery relate to how you run: runs after your best third of nights against your worst third, compared at the same heart rate (against your own speed-for-HR line), with each group's HR, a correlation, and an honest "not enough data" |
 
 **Detail.** Compact by default; pass `detail: "full"` for Garmin's raw data.
@@ -491,7 +495,8 @@ on its own means "since then": the range ends today.
 
 Together these cover every endpoint in
 [Garmin's Personal API spec](https://developer.garmin.com/gc-developer-program/personal/swagger-docs/),
-including the activity file download that `get_activity_analysis` reads.
+including the activity file download that `get_activity_analysis`,
+`get_personal_bests` and `get_strength_progress` read.
 There's deliberately no "GET any path" tool: with one, the model guessed at
 endpoints that don't exist and wasted calls.
 
@@ -536,6 +541,17 @@ any formula. Otherwise the estimate uses Riegel's formula (T2 = T1 ×
 or more), because it's most accurate over short jumps. When two distances are
 about equally close, the more recent effort is used. It never projects more
 than 4× up or down. They're estimates, not Garmin's race predictor.
+
+### Strength training
+
+Log reps and weight on the watch, or add them to the activity in Garmin Connect
+afterwards. Use a Connect workout to get exercise names: without one, sets
+often have no name and are listed as unidentified.
+
+Trends come from Garmin's summary of each session, so they include edits made
+in Connect. Individual sets, top sets and estimated 1RM come from the watch's
+own file, which never changes. If the two differ, you get the summary's figures
+and a note instead. The targets in a planned workout are never counted as done.
 
 ### Recovery and performance
 
@@ -706,8 +722,8 @@ cut a release.
   goals, settings or workouts. The Personal API has no write access, so your
   AI app can read your Garmin data but never change it.
 - **No raw activity files or GPS tracks.** `get_activity_analysis` reads the
-  FIT file in the server and returns only derived tables; the file, samples and
-  positions never reach the model. Manual entries and GPX/TCX imports have no
+  FIT file in the server and returns only derived tables (`get_strength_progress`
+  adds the sets you logged); the file, samples and positions never reach the model. Manual entries and GPX/TCX imports have no
   FIT data, so the tool says so instead.
 - **Rate limits unpublished.** Garmin hasn't published Personal API rate
   limits. A 429 comes back as a clear tool error.
