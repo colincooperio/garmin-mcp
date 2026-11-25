@@ -88,10 +88,10 @@ describe("mcpb manifest", () => {
 
 describe("mcpb prompts (Claude Desktop rejects any mismatch)", () => {
 	const samples = [
-		{ period: "last 30 days", activity_type: "running" },
-		{ period: "this_year", activity_type: "cycling" },
-		{ period: "", activity_type: "" },
-		{ period: "${arguments.period} 'quoted' $& $1", activity_type: "trail running" },
+		{ period: "last 30 days", activity_type: "running", exercise: "bench press" },
+		{ period: "this_year", activity_type: "cycling", exercise: "all" },
+		{ period: "", activity_type: "", exercise: "" },
+		{ period: "${arguments.period} 'quoted' $& $1", activity_type: "trail running", exercise: "${arguments.exercise} $&" },
 	];
 
 	for (const p of manifest.prompts as { name: string; text: string; arguments?: string[] }[]) {

@@ -92,6 +92,17 @@ export const PROMPTS: PromptDef[] = [
 			"Call search_activities with activity_type set to that sport's Garmin type key (e.g. running) and limit 5, " +
 			"then compare_activities on the ones of similar distance. Show pace, HR, cadence and training effect side by side and say what changed.",
 	},
+	{
+		name: "strength_review",
+		title: "Strength review",
+		description: "How one lift, or all of them, has changed over the last 8 weeks: weight, volume, top sets.",
+		arguments: [{ name: "exercise", description: "The exercise, e.g. bench press or deadlift, or 'all' for every exercise." }],
+		template:
+			"Review my strength training over the last 8 weeks. Exercise: ${arguments.exercise}. " +
+			"Call get_strength_progress once with detail 'sets', with exercise set to that name, or no exercise if it is 'all'. " +
+			"Say what went up, held or dropped in max weight, volume and top set, treat estimated 1RM as an estimate, and don't read anything into sessions with nothing recorded. " +
+			"If set_detail_complete is false, say the top sets are partial. Keep it short.",
+	},
 ];
 
 /**

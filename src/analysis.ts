@@ -440,16 +440,11 @@ const NO_FILE =
 	"Garmin has no original file for this activity (usually a manual entry), so splits, laps and best efforts aren't available. get_activity still has its totals.";
 
 /**
- * Downloads the activity's original file, decodes the FIT inside and analyses
- * it. The result is cached indefinitely (the file never changes); the file
- * itself never is. 404s and non-FIT originals (GPX/TCX imports) come back as
- * `unavailable` rather than throwing.
+ * Downloads the activity's original file and decodes the FIT inside. 404s and
+ * non-FIT originals (GPX/TCX imports) come back as `unavailable` rather than
+ * throwing. Needs no recorded samples, unlike the analysis.
  */
-export async function loadAnalysis(src: AnalysisSource, activityId: string): Promise<Loaded> {
-	const cacheName = analysisCacheName(activityId);
-	const cached = await src.getCached<Analysis>(cacheName);
-	if (cached?.v === ANALYSIS_VERSION) return { analysis: cached };
-
+export async function loadFit(src: Pick<AnalysisSource, "getBytes">, activityId: string): Promise<{ fit: FitActivity } | { unavailable: string }> {
 	let bytes: Uint8Array;
 	try {
 		bytes = await src.getBytes(`/download-service/files/activity/${activityId}`);
@@ -479,13 +474,28 @@ export async function loadAnalysis(src: AnalysisSource, activityId: string): Pro
 		};
 	}
 
-	let decoded: FitActivity;
 	try {
-		decoded = decodeFit(fit);
+		return { fit: decodeFit(fit) };
 	} catch (err) {
 		if (err instanceof FitError) return { unavailable: `Garmin's FIT file for this activity is malformed (${err.message}).` };
 		throw err;
 	}
+}
+
+/**
+ * Downloads the activity's original file, decodes the FIT inside and analyses
+ * it. The result is cached indefinitely (the file never changes); the file
+ * itself never is. 404s and non-FIT originals (GPX/TCX imports) come back as
+ * `unavailable` rather than throwing.
+ */
+export async function loadAnalysis(src: AnalysisSource, activityId: string): Promise<Loaded> {
+	const cacheName = analysisCacheName(activityId);
+	const cached = await src.getCached<Analysis>(cacheName);
+	if (cached?.v === ANALYSIS_VERSION) return { analysis: cached };
+
+	const loaded = await loadFit(src, activityId);
+	if ("unavailable" in loaded) return loaded;
+	const decoded = loaded.fit;
 	if (!decoded.records.length) {
 		return { unavailable: "The FIT file has no recorded samples, so there is nothing to analyse beyond get_activity's totals." };
 	}

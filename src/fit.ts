@@ -1,7 +1,7 @@
 /**
  * Minimal reader for Garmin activity downloads: unzips the original file and
- * decodes just the FIT messages the analysis needs (record, lap, event,
- * session). Everything else, including GPS position, is skipped unread.
+ * decodes just the FIT messages the tools need (record, lap, event, session,
+ * strength set). Everything else, including GPS position, is skipped unread.
  *
  * Deliberately dependency-free: Garmin's FIT SDK decodes every message and
  * costs ~40 ms of CPU for a two-hour run, which is past the Workers free
@@ -50,6 +50,29 @@ export interface FitEvent {
 	type: string;
 }
 
+/** One strength set (or rest between sets) as the watch recorded it. */
+export interface FitSet {
+	startTs?: number;
+	/** Seconds. */
+	duration?: number;
+	reps?: number;
+	/** Kilograms. */
+	weight?: number;
+	/** 0 rest, 1 active. */
+	setType?: number;
+	/** Exercise numbers: the first of up to three, the others being the watch's guesses. 65534 is unknown. */
+	category?: number;
+	subtype?: number;
+	workoutStep?: number;
+}
+
+/** The readable name of an exercise number pair, written by the watch for workout sessions. */
+export interface FitExerciseTitle {
+	category: number;
+	exercise: number;
+	title: string;
+}
+
 export interface FitActivity {
 	sport?: string;
 	subSport?: number;
@@ -64,6 +87,9 @@ export interface FitActivity {
 	 * entry than the boundaries: the last is time above the top boundary.
 	 */
 	hrTimeInZone?: { hrHighBoundaries: number[]; hrSeconds: number[] };
+	/** Strength sets and exercise titles, when the file has any. */
+	sets?: FitSet[];
+	exerciseTitles?: FitExerciseTitle[];
 }
 
 export class FitError extends Error {
@@ -148,6 +174,8 @@ const MESG_LAP = 19;
 const MESG_RECORD = 20;
 const MESG_EVENT = 21;
 const MESG_TIME_IN_ZONE = 216;
+const MESG_SET = 225;
+const MESG_EXERCISE_TITLE = 264;
 const FIELD_TIMESTAMP = 253;
 
 const EVENT_TYPES = [
@@ -279,11 +307,34 @@ function collectTimeInZone(v: DataView, p: number, def: Definition, out: FitActi
 	return ts;
 }
 
+/**
+ * exercise_title (264): field 0 exercise_category, 1 exercise_name, 2
+ * wkt_step_name (the title, a string). It has no timestamp.
+ */
+function collectExerciseTitle(v: DataView, p: number, def: Definition, out: FitActivity) {
+	let category: number | undefined;
+	let exercise: number | undefined;
+	let title = "";
+	for (const f of def.fields) {
+		if (f.num === 0) category = readField(v, p, f, def.little);
+		else if (f.num === 1) exercise = readField(v, p, f, def.little);
+		else if (f.num === 2 && (f.baseType & 0x1f) === 7) {
+			const bytes = new Uint8Array(v.buffer, v.byteOffset + p, f.size);
+			const end = bytes.indexOf(0);
+			title = new TextDecoder().decode(end < 0 ? bytes : bytes.subarray(0, end)).trim();
+		}
+		p += f.size;
+	}
+	if (category !== undefined && exercise !== undefined && title) (out.exerciseTitles ??= []).push({ category, exercise, title });
+}
+
 const WANTED: Record<number, Set<number>> = {
 	[MESG_RECORD]: new Set([FIELD_TIMESTAMP, 2, 3, 4, 5, 6, 7, 53, 73, 78]),
 	[MESG_EVENT]: new Set([FIELD_TIMESTAMP, 0, 1]),
 	[MESG_LAP]: new Set([FIELD_TIMESTAMP, 2, 7, 8, 9, 13, 15, 16, 17, 19, 20, 21, 22, 23, 24, 71, 80, 110]),
 	[MESG_SESSION]: new Set([FIELD_TIMESTAMP, 2, 5, 6, 8, 9]),
+	// No timestamp: a set's is field 254, and it isn't reliably the set's end.
+	[MESG_SET]: new Set([0, 3, 4, 5, 6, 7, 8, 11]),
 };
 
 /** Decodes the activity messages of a FIT file. Throws FitError on malformed data. */
@@ -345,6 +396,12 @@ function decodeData(v: DataView, start: number, end: number, out: FitActivity) {
 		if (def.global === MESG_TIME_IN_ZONE) {
 			const t = collectTimeInZone(v, p, def, out);
 			if (t !== undefined) lastTs = t;
+			p += def.size + def.devSize;
+			continue;
+		}
+
+		if (def.global === MESG_EXERCISE_TITLE) {
+			collectExerciseTitle(v, p, def, out);
 			p += def.size + def.devSize;
 			continue;
 		}
@@ -422,6 +479,20 @@ function collect(global: number, f: Map<number, number>, ts: number | undefined,
 				intensity: f.get(23) === undefined ? undefined : (INTENSITY[f.get(23)!] ?? String(f.get(23))),
 				trigger: f.get(24) === undefined ? undefined : (LAP_TRIGGER[f.get(24)!] ?? String(f.get(24))),
 				workoutStep: f.get(71),
+			});
+			return;
+		}
+		case MESG_SET: {
+			// 7 and 8 are arrays; readField takes the first element, which is the one that counts.
+			(out.sets ??= []).push({
+				startTs: f.get(6),
+				duration: scaled(f.get(0), 1000),
+				reps: f.get(3),
+				weight: scaled(f.get(4), 16),
+				setType: f.get(5),
+				category: f.get(7),
+				subtype: f.get(8),
+				workoutStep: f.get(11),
 			});
 			return;
 		}

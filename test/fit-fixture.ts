@@ -28,6 +28,19 @@ export interface SynthLap {
 	trigger?: number;
 }
 
+export interface SynthSet {
+	/** Seconds after T0. */
+	at: number;
+	seconds: number;
+	/** 0 rest, 1 active (default). */
+	type?: number;
+	reps?: number;
+	kg?: number;
+	category?: (number | undefined)[];
+	subtype?: (number | undefined)[];
+	step?: number;
+}
+
 export interface SynthActivity {
 	/** FIT sport enum: 1 running, 2 cycling. */
 	sport?: number;
@@ -39,6 +52,12 @@ export interface SynthActivity {
 	compressTimestamps?: boolean;
 	/** Write record definitions big-endian. */
 	bigEndian?: boolean;
+	/** Strength set messages (225). `category` and `subtype` are arrays, as watches write them. */
+	sets?: SynthSet[];
+	/** Exercise title messages (264). */
+	titles?: { category: number; exercise: number; title: string }[];
+	/** Workout step messages (27) with a rep target, which must never be read as done. */
+	plannedReps?: number[];
 	/**
 	 * time_in_zone messages (216): `highs` are the zone high boundaries in bpm,
 	 * `seconds` the time in each zone (one more entry than `highs`). `ref` is
@@ -181,6 +200,47 @@ export function buildFit(a: SynthActivity): Uint8Array {
 			w.uint(z.ref ?? 18, 2, true);
 			for (const s of z.seconds) w.uint(Math.round(s * 1000), 4, true);
 			for (const h of z.highs) w.u8(h);
+		}
+	}
+
+	if (a.titles?.length) {
+		const SIZE_TITLE = 40;
+		w.u8(0x40 | 6), w.u8(0), w.u8(0), w.uint(264, 2, true), w.u8(4);
+		for (const f of [[254, 2, UINT16], [0, 2, UINT16], [1, 2, UINT16], [2, SIZE_TITLE, 0x07]]) for (const b of f) w.u8(b);
+		a.titles.forEach((t, i) => {
+			w.u8(6);
+			w.uint(i, 2, true), w.uint(t.category, 2, true), w.uint(t.exercise, 2, true);
+			const text = new TextEncoder().encode(t.title);
+			for (let k = 0; k < SIZE_TITLE; k++) w.u8(text[k] ?? 0);
+		});
+	}
+
+	if (a.plannedReps?.length) {
+		const stepFields = (i: number, reps: number): Field[] => [
+			[254, UINT16, i],
+			[1, ENUM, 29],
+			[2, UINT32, reps],
+		];
+		define(7, 27, stepFields(0, 0));
+		a.plannedReps.forEach((reps, i) => data(7, stepFields(i, reps)));
+	}
+
+	if (a.sets?.length) {
+		w.u8(0x40 | 8), w.u8(0), w.u8(0), w.uint(225, 2, true), w.u8(9);
+		const fields = [[254, 4, UINT32], [0, 4, UINT32], [6, 4, UINT32], [3, 2, UINT16], [4, 2, UINT16], [5, 1, UINT8], [7, 6, UINT16], [8, 6, UINT16], [11, 2, UINT16]];
+		for (const f of fields) for (const b of f) w.u8(b);
+		const u16 = (v: number | undefined) => w.uint(v ?? 0xffff, 2, true);
+		for (const s of a.sets) {
+			w.u8(8);
+			w.uint(T0, 4, true); // 254: some watches write the session start here
+			w.uint(Math.round(s.seconds * 1000), 4, true);
+			w.uint(T0 + s.at, 4, true);
+			u16(s.reps);
+			u16(s.kg === undefined ? undefined : Math.round(s.kg * 16));
+			w.u8(s.type ?? 1);
+			for (let k = 0; k < 3; k++) u16(s.category?.[k]);
+			for (let k = 0; k < 3; k++) u16(s.subtype?.[k]);
+			u16(s.step);
 		}
 	}
 

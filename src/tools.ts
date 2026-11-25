@@ -16,6 +16,7 @@ import { GarminApiError, type GarminClient } from "./garmin.ts";
 import { CAVEAT, compareByMeasure, MEASURES, pairRuns, sourcesFor } from "./recovery.ts";
 import { type LoadLimits, loadMany, PB_DISTANCES, personalBests, PREDICTION_WINDOW_DAYS, racePredictions } from "./records.ts";
 import { PERIODS, type Period, resolvePeriod, todayIn } from "./periods.ts";
+import { loadSets, matchesExercise, parseSession, strengthProgress } from "./strength.ts";
 import { addDays, daysBetween, mapLimit, mergeChunks, splitRange } from "./ranges.ts";
 import { localizeTimes } from "./times.ts";
 import type { UpdateNotice } from "./update.ts";
@@ -295,10 +296,11 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 		g: GarminClient,
 		params: Record<string, string | number | undefined>,
 		cap = MAX_SUMMARY_ACTIVITIES,
+		opts?: { cacheTtl?: number },
 	) => {
 		const list: Record<string, unknown>[] = [];
 		for (let start = 0; start < cap; start += ACTIVITY_PAGE) {
-			const page = await searchPage(g, { ...params, start, limit: ACTIVITY_PAGE });
+			const page = await searchPage(g, { ...params, start, limit: ACTIVITY_PAGE }, opts);
 			if (!Array.isArray(page)) break;
 			list.push(...page.filter(isObj));
 			if (page.length < ACTIVITY_PAGE) return { list, capped: false };
@@ -1122,6 +1124,58 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 			}),
 	);
 
+	server.registerTool(
+		"get_strength_progress",
+		{
+			title: "Strength progress",
+			description:
+				"Strength training progress per exercise: sets, reps, max weight, volume and average load for each session, and the first-vs-last trend. " +
+				"Use for 'am I getting stronger', 'is my bench going up', 'top set over the last 8 weeks', 'how has my deadlift changed'. " +
+				"Pass detail='sets' for top sets, reps at a weight or estimated 1RM: it reads each session's file (slow the first time, then cached); if set_detail_complete is false, call again. " +
+				"Only sets logged on the watch or in Garmin Connect count. Planned workout targets are never included.",
+			inputSchema: z.object({
+				exercise: z
+					.string()
+					.trim()
+					.min(1)
+					.max(100)
+					.optional()
+					.describe("Exercise in English, e.g. 'dumbbell bench press'; 'bench press' matches every variant. Omit for all: the top 5 are detailed."),
+				weeks: z.number().int().min(1).max(52).default(8).describe("Weeks back from today."),
+				unit: z.enum(["kg", "lb"]).optional().describe("Defaults to the user's Garmin unit setting."),
+				detail: z.enum(["sets"]).optional().describe("'sets' adds individual sets, top set and estimated 1RM."),
+			}),
+			annotations: { ...READ_ONLY, title: "Strength progress" },
+		},
+		({ exercise, weeks, unit, detail }) =>
+			run(async () => {
+				const g = garmin();
+				const end = await userToday();
+				const start = addDays(end, 1 - weeks * 7);
+				// Uncached: sets edited in Garmin Connect change the summary of past sessions.
+				const { list, capped } = await fetchActivities(
+					g,
+					{ ...activityTypeParams("fitness_equipment", "strength_training"), startDate: start, endDate: end, sortBy: "startLocal", sortOrder: "desc" },
+					undefined,
+					{ cacheTtl: 0 },
+				);
+				const sessions = list.map(parseSession);
+				// Nothing recorded means nothing to show from the file either.
+				const wanted = sessions.filter(
+					(s) => s.recorded && (exercise === undefined || s.rows.some((r) => r.name === undefined || matchesExercise(exercise, r.search))),
+				);
+				const chosen = wanted.slice(0, pbLimits.maxActivities);
+				const sets = detail === "sets" ? await loadSets(g, chosen, pbLimits, { describe: errorText }) : undefined;
+				const resolvedUnit = unit ?? ((await settings()).measurementSystem === "statute_us" ? "lb" : "kg");
+				const { notes, ...result } = strengthProgress(sessions, { unit: resolvedUnit, exercise, sets });
+				const more = [
+					...(capped ? ["Over 1000 strength activities in this range; only the newest are included."] : []),
+					...(sets && wanted.length > chosen.length ? [`Per-set detail covers the newest ${chosen.length} of ${wanted.length} sessions.`] : []),
+				];
+				return { start_date: start, end_date: end, ...result, notes: [...(notes as string[]), ...more] };
+			}),
+	);
+
 	// -- Nutrition, goals, women's health
 	dayTool(
 		"get_nutrition",
@@ -1162,7 +1216,7 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 	// No raw-path escape hatch on purpose: these tools cover every endpoint in
 	// Garmin's Personal API Swagger spec, so a generic GET only invited the model to
 	// guess at endpoints that don't exist (golf, training status, etc.). The binary
-	// /download-service/files/activity/{id} is read only by get_activity_analysis.
+	// /download-service/files/activity/{id} is read only to decode activity files (see loadFit).
 	// Omitted from the spec's 26 paths: /usersummary-service/usersummary/daily (same
 	// data as get_daily_summaries) and /weight-service/weight/all (same as get_weight).
 }
