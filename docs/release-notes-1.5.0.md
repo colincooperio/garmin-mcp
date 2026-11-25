@@ -18,9 +18,7 @@
 ## When you update
 - The analysis cache version changed, so the first personal-bests question after updating downloads your activity files again. It may be slower, or partial on the cloud version: ask again and it carries on where it stopped.
 
-## Known limitations
+## Known limitation
 - Per-set strength detail matches by exact exercise title, so non-English titles fall into "other sets". Trends aren't affected.
-- Named top sets with an estimated 1RM are covered by synthetic tests only, not yet by real data.
-- W/kg is untested on real weight data.
 
 **Full Changelog**: https://github.com/colincooperio/garmin-mcp/compare/v1.4.3...v1.5.0
