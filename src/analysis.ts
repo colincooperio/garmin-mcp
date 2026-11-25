@@ -684,11 +684,14 @@ export function formatDrift(a: Analysis, unit: Unit): Record<string, unknown> | 
 		avg_hr: r0(h.avgHr),
 	});
 	const speed = (h: Half) => h.distance / h.time;
+	const foot = a.cadenceUnit === "spm";
 	const out: Record<string, unknown> = {
 		first_half: half(d.first),
 		second_half: half(d.second),
-		// Positive = second half slower (speed dropped), for pace and speed sports alike.
-		pace_change_pct: round((speed(d.first) / speed(d.second) - 1) * 100, 1),
+		// Pace: positive = second half slower. Speed: positive = second half faster.
+		...(foot
+			? { pace_change_pct: round((speed(d.first) / speed(d.second) - 1) * 100, 1) }
+			: { speed_change_pct: round((speed(d.second) / speed(d.first) - 1) * 100, 1) }),
 	};
 	if (d.first.avgHr && d.second.avgHr) {
 		const ef1 = speed(d.first) / d.first.avgHr;
@@ -697,8 +700,8 @@ export function formatDrift(a: Analysis, unit: Unit): Record<string, unknown> | 
 		out.decoupling_pct = round(((ef1 - ef2) / ef1) * 100, 1);
 	}
 	out.note =
-		"Halves split by timer time. pace_change_pct > 0 means the second half was slower. " +
-		"decoupling_pct is pace:HR (aerobic) decoupling; under ~5% on a steady effort usually means good aerobic endurance." +
+		`Halves split by timer time. ${foot ? "pace_change_pct > 0 means the second half was slower" : "speed_change_pct > 0 means the second half was faster"}. ` +
+		`decoupling_pct is ${foot ? "pace" : "speed"}:HR (aerobic) decoupling; under ~5% on a steady effort usually means good aerobic endurance.` +
 		(a.structured ? " This activity has warm-up/cool-down or rest laps, so the halves mix different efforts; read decoupling with care." : "");
 	return out;
 }

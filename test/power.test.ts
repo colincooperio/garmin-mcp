@@ -43,11 +43,16 @@ describe("best power", () => {
 		assert.equal(best(blocks([60, 300], [60, 100], [60, 300]), 60)?.startTime, 0);
 	});
 
-	it("counts zeros, skips missing readings, and won't let a few readings stand for a long effort", () => {
+	it("counts missing power as 0 W in best power, as Garmin does, but not in the average", () => {
 		near(summarizePower(blocks([30, 200], [30, 0]))?.avg, 100);
-		near(summarizePower(blocks([30, 200], [30, undefined]))?.avg, 200);
-		assert.equal(best(blocks([30, 200], [30, undefined]), 60), undefined, "half the minute is missing");
-		near(best(blocks([57, 200], [3, undefined]), 60)?.watts, 200);
+		const missing = blocks([30, 200], [30, undefined]);
+		near(summarizePower(missing)?.avg, 200);
+		near(best(missing, 60)?.watts, 100);
+		near(best(blocks([57, 200], [3, undefined]), 60)?.watts, 190);
+	});
+
+	it("skips windows that are mostly empty", () => {
+		assert.equal(best(blocks([29, 200], [31, undefined]), 60), undefined);
 	});
 
 	it("weights irregular samples by time, the same as one a second", () => {
@@ -63,9 +68,17 @@ describe("best power", () => {
 		near(best([{ t: 0, pwr: 0 }, { t: 10, pwr: 100 }, { t: 20, pwr: 300 }, { t: 23, pwr: 100 }], 5)?.watts, 300);
 	});
 
-	it("leaves out long dropouts rather than stretching one reading over them", () => {
-		const s = [...blocks([100, 100]), { t: 160, pwr: 1000 }, ...Array.from({ length: 100 }, (_, i) => ({ t: 161 + i, pwr: 100 }))];
-		near(summarizePower(s)?.avg, 100);
+	it("counts a dropout as 0 W apart from its last second, rather than stretching one reading over it", () => {
+		const s = [...blocks([300, 100]), { t: 360, pwr: 700 }, ...Array.from({ length: 300 }, (_, i) => ({ t: 361 + i, pwr: 100 }))];
+		near(summarizePower(s)?.avg, (600 * 100 + 700) / 601);
+		// 5 min with a 60 s dropout in it: 59 s count as 0 W.
+		near(best(blocks([100, 100]).concat([{ t: 160, pwr: 100 }], Array.from({ length: 140 }, (_, i) => ({ t: 161 + i, pwr: 100 }))), 300)?.watts, (241 * 100) / 300);
+	});
+
+	it("counts missing power as 0 W in normalized power too", () => {
+		const full = summarizePower(blocks([1200, 200]))!.normalized!;
+		const gappy = summarizePower(blocks([590, 200], [12, undefined], [598, 200]))!.normalized!;
+		assert.ok(gappy < full - 0.5, `${gappy} vs ${full}`);
 	});
 
 	it("ignores samples recorded while the timer was paused", () => {
@@ -120,7 +133,9 @@ describe("analysis by sport", () => {
 		assert.equal(out.best_efforts[0].speed_kmh, 28.8);
 		assert.equal(out.best_efforts[0].time, "2:05");
 		assert.ok(out.best_efforts.every((e: any) => e.pace === undefined));
-		assert.ok(out.drift.first_half);
+		assert.equal(out.drift.speed_change_pct, 0);
+		assert.equal(out.drift.pace_change_pct, undefined);
+		assert.match(out.drift.note, /speed_change_pct > 0 means the second half was faster\. decoupling_pct is speed:HR/);
 
 		const ftp = format(a, { ftp: 250, weight: { kg: 75, date: "2026-01-01" } }).power;
 		const np = a.power!.normalized!;
@@ -129,6 +144,19 @@ describe("analysis by sport", () => {
 		assert.equal(ftp.ftp_w, 250);
 		assert.equal(ftp.best[2].w_per_kg, 4);
 		assert.match(ftp.notes[0], /75 kg \(2026-01-01\)/);
+	});
+
+	it("speed_change_pct is positive when the second half is faster", () => {
+		const records = [...steadyRun(600, 8), ...steadyRun(600, 10, 600, 4800).slice(1)];
+		assert.equal(format(analyse({ sport: 2, records })).drift.speed_change_pct, 25);
+	});
+
+	it("an e-bike ride (FIT sport 21) is a ride", () => {
+		const out = format(analyse({ sport: 21, records: ride() }), { ftp: 250 });
+		assert.equal(out.sport, "cycling");
+		assert.equal(out.splits[0].cadence_rpm, 90);
+		assert.equal(out.best_efforts[0].speed_kmh, 28.8);
+		assert.ok(out.power.tss > 0 && out.drift.first_half);
 	});
 
 	it("a run: pace, doubled cadence and best efforts as before, with power but never IF or TSS", () => {
@@ -187,6 +215,8 @@ describe("analysis by sport", () => {
 		assert.equal(out.sport, "hiking");
 		assert.equal(out.best_efforts[0].pace, "11:07 /km");
 		assert.ok(out.drift.first_half.pace);
+		assert.equal(out.drift.pace_change_pct, 0);
+		assert.equal(out.drift.speed_change_pct, undefined);
 		assert.deepEqual(out.unavailable.filter((u: string) => !u.startsWith("hr_zones")), ["power: no power data in this activity"]);
 	});
 

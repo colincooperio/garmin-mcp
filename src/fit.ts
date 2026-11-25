@@ -215,6 +215,7 @@ const SPORTS: Record<number, string> = {
 	17: "hiking",
 	18: "multisport",
 	19: "paddling",
+	21: "cycling", // e-biking: cycling in every way the analysis cares about
 	37: "stand_up_paddleboarding",
 };
 

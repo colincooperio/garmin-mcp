@@ -4,7 +4,8 @@
  *
  * As everywhere else in the analysis, a sample stands for the timer time since
  * the one before it, so irregular (smart) recording is weighted correctly.
- * Zero watts counts; time without a power reading is left out.
+ * Zero watts counts. Missing power counts as 0 W in best and normalized power,
+ * as in Garmin Connect, and is left out of the average.
  */
 
 export interface PowerSample {
@@ -21,14 +22,10 @@ export const POWER_DURATIONS: [label: string, seconds: number][] = [
 	["60 min", 3600],
 ];
 
-/**
- * A gap longer than this is missing data, not smart recording, and is left
- * out. Garmin Connect counts such dropouts as 0 W, so its best powers can be
- * lower for a ride with dropouts; without them the two agree exactly.
- */
+/** A gap longer than this is a dropout, not smart recording: only its last second has a reading. */
 const MAX_GAP_S = 30;
-/** Share of a window that must have power, so a few readings can't stand for a long effort. */
-const MIN_COVERAGE = 0.9;
+/** Windows with less power data than this share are mostly empty, and skipped. */
+const MIN_COVERAGE = 0.5;
 /** Normalized power says little about short efforts. */
 const MIN_NP_SECONDS = 600;
 const NP_WINDOW_S = 30;
@@ -62,26 +59,34 @@ interface Cumulative {
 }
 
 function accumulate(samples: readonly PowerSample[]): Cumulative {
-	const t = new Float64Array(samples.length);
-	const joules = new Float64Array(samples.length);
-	const covered = new Float64Array(samples.length);
+	// A dropout takes two entries.
+	const t = new Float64Array(samples.length * 2);
+	const joules = new Float64Array(samples.length * 2);
+	const covered = new Float64Array(samples.length * 2);
 	let n = 0;
-	for (const s of samples) {
-		const w = n ? s.t - t[n - 1]! : 0;
-		if (n && w <= 0) continue; // recorded while the timer was paused
-		const counts = n > 0 && s.pwr !== undefined && w <= MAX_GAP_S;
-		t[n] = s.t;
-		joules[n] = (n ? joules[n - 1]! : 0) + (counts ? s.pwr! * w : 0);
-		covered[n] = (n ? covered[n - 1]! : 0) + (counts ? w : 0);
+	const push = (at: number, j: number, c: number) => {
+		t[n] = at;
+		joules[n] = (n ? joules[n - 1]! : 0) + j;
+		covered[n] = (n ? covered[n - 1]! : 0) + c;
 		n++;
+	};
+	for (const s of samples) {
+		let w = n ? s.t - t[n - 1]! : 0;
+		if (n && w <= 0) continue; // recorded while the timer was paused
+		if (w > MAX_GAP_S) {
+			push(s.t - 1, 0, 0);
+			w = 1;
+		}
+		if (s.pwr === undefined) push(s.t, 0, 0);
+		else push(s.t, s.pwr * w, w);
 	}
 	return { n, t, joules, covered };
 }
 
 /**
  * Average watts over [start, start + seconds] for each of `count` increasing
- * starts (NaN where too little of the window has power). Both edges only move
- * forward, and are interpolated between samples.
+ * starts, with missing power as 0 W (NaN where the window is mostly empty).
+ * Both edges only move forward, and are interpolated between samples.
  */
 function windowAverages(c: Cumulative, count: number, startAt: (i: number) => number, seconds: number): Float64Array {
 	const { n, t, joules, covered } = c;
@@ -107,14 +112,14 @@ function windowAverages(c: Cumulative, count: number, startAt: (i: number) => nu
 			j += f * (joules[a]! - joules[a - 1]!);
 			k += f * (covered[a]! - covered[a - 1]!);
 		}
-		out[i] = k >= need ? j / k : Number.NaN;
+		out[i] = k >= need ? j / seconds : Number.NaN;
 	}
 	return out;
 }
 
 /**
  * Best average power over `seconds`. Power is constant between samples, so
- * with no data missing the best window starts or ends at a sample: both are tried.
+ * the best window starts or ends at a sample: both are tried.
  */
 function bestOver(c: Cumulative, seconds: number): { watts: number; startTime: number } | undefined {
 	const { n, t } = c;
