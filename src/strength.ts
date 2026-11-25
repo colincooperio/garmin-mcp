@@ -21,7 +21,8 @@ export const TOP_EXERCISES = 5;
 
 export const MISMATCH_NOTE = "watch record differs from Garmin Connect (probably edited there); per-set detail unavailable";
 export const UNNAMED = "unnamed exercise";
-const NAMES_HINT = "Exercise names come from logging with a Connect workout or picking the exercise on the watch.";
+const NAMES_HINT =
+	"Names come from logging with a Connect workout, or, on watches that support it, choosing the exercise when you finish a set.";
 
 // ---- the summary ------------------------------------------------------------
 
@@ -234,7 +235,7 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 function formatter(unit: WeightUnit) {
 	const value = (kg: number) => (unit === "kg" ? round(kg, 2) : round(kg * LB_PER_KG, 1));
 	const weight = (kg: number) => `${value(kg)} ${unit}`;
-	const volume = (kg: number) => `${round(unit === "kg" ? kg : kg * LB_PER_KG, 1)} ${unit}`;
+	const load = (kg: number) => `${round(unit === "kg" ? kg : kg * LB_PER_KG, 1)} ${unit}`;
 	const change = (a: number, b: number) => {
 		const diff = round(value(b) - value(a), 2);
 		return `${value(a)} -> ${value(b)} ${unit} (${diff > 0 ? "+" : ""}${diff})`;
@@ -249,7 +250,7 @@ function formatter(unit: WeightUnit) {
 				: s.kg !== undefined
 					? `${weight(s.kg)}, reps not recorded`
 					: "nothing recorded";
-	return { weight, volume, change, oneRm, top, set };
+	return { weight, load, change, oneRm, top, set };
 }
 
 /** Per-exercise detail of one named group, oldest session first. */
@@ -306,8 +307,8 @@ export function strengthProgress(
 			if (row.maxKg === undefined) parts.push("no weight recorded");
 			else parts.push(`max ${f.weight(row.maxKg)}`);
 			if (row.volumeKg !== undefined) {
-				parts.push(`volume ${f.volume(row.volumeKg)}`);
-				if (row.reps !== undefined) parts.push(`avg load ${f.weight(row.volumeKg / row.reps)}`);
+				parts.push(`volume ${f.load(row.volumeKg)}`);
+				if (row.reps !== undefined) parts.push(`avg load ${f.load(row.volumeKg / row.reps)}`);
 			}
 			const top = tops[i];
 			if (top) {
@@ -319,13 +320,23 @@ export function strengthProgress(
 		return { exercise: name, sessions_logged: entries.length, trend: trend(entries, tops, f, opts.unit), sessions: lines };
 	});
 
-	// Sets the summary can't be tied to: titles with no summary row of that name, and unnamed ones.
+	// Sets that can't be tied to a named exercise, one line per session: what the
+	// summary leaves unidentified, with the watch's unnamed or differently named sets.
 	const otherSets: string[] = [];
+	const unidentifiedIn = (s: Session) =>
+		opts.exercise !== undefined
+			? []
+			: s.rows
+					.filter((r) => r.name === undefined)
+					.map((r) => `unidentified: ${plural(r.sets, "set")}, ${r.reps === undefined ? "reps not recorded" : plural(r.reps, "rep")}`);
 	let untitled = 0;
 	if (opts.sets) {
 		for (const s of recorded) {
 			const sets = trusted.get(s.id);
-			if (!sets) continue;
+			if (!sets) {
+				for (const c of unidentifiedIn(s)) otherSets.push(`${s.date}: ${c}${differs.has(s.id) ? ` [${MISMATCH_NOTE}]` : ""}`);
+				continue;
+			}
 			const other = new Map<string, DoneSet[]>();
 			let matched = false;
 			for (const set of sets) {
@@ -335,14 +346,13 @@ export function strengthProgress(
 				if (wanted) matched ||= set.name !== undefined;
 				if (wanted && !hasRow && (set.reps !== undefined || set.kg !== undefined)) other.set(label, [...(other.get(label) ?? []), set]);
 			}
-			for (const [label, list] of other) {
+			const details = [...other].map(([label, list]) => {
 				// A top set needs to be of one exercise, which unnamed sets may not be.
 				const top = label === UNNAMED ? undefined : topSet(list);
-				otherSets.push(
-					`${s.date}: ${label}: ${list.map(f.set).join("; ")}` +
-						(top ? `; top set ${f.top(top)} (est. 1RM ${f.oneRm(top)} ${opts.unit})` : ""),
-				);
-			}
+				return `${label}: ${list.map(f.set).join("; ")}` + (top ? `; top set ${f.top(top)} (est. 1RM ${f.oneRm(top)} ${opts.unit})` : "");
+			});
+			const counts = unidentifiedIn(s);
+			if (details.length || counts.length) otherSets.push(`${s.date}: ${[...counts, ...details].join(" | ")}`);
 			const inTrend = opts.exercise !== undefined && s.rows.some((r) => r.name !== undefined && matchesExercise(opts.exercise!, r.search));
 			if (inTrend && !matched) untitled++;
 		}
@@ -374,10 +384,16 @@ export function strengthProgress(
 		activities: ordered.length,
 		exercises_found: opts.exercise === undefined ? ranked.map(([name, e]) => `${name}: ${plural(e.length, "session")}`) : undefined,
 		exercises,
-		other_sets: otherSets,
-		unidentified: unidentified.sessions
-			? `Unidentified: ${plural(unidentified.sets, "set")}, ${plural(unidentified.reps, "rep")} in ${plural(unidentified.sessions, "session")}. ${NAMES_HINT}`
-			: undefined,
+		// One block, so the same session's unidentified total and sets don't read as two sessions.
+		other_sets:
+			unidentified.sessions || otherSets.length
+				? {
+						unidentified: unidentified.sessions
+							? `Unidentified: ${plural(unidentified.sets, "set")}, ${plural(unidentified.reps, "rep")} in ${plural(unidentified.sessions, "session")}. ${NAMES_HINT}`
+							: undefined,
+						sessions: otherSets,
+					}
+				: undefined,
 		notes,
 	};
 }

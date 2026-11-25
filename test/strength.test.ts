@@ -107,7 +107,10 @@ describe("strength summary", () => {
 			session(3, "2026-03-03", [["UNKNOWN", undefined, 9, 0, 0, 0]]),
 			parseSession({ activityId: 4, startTimeLocal: "2026-03-04 07:00:00" }),
 		]);
-		assert.match(out.unidentified, /^Unidentified: 5 sets, 32 reps in 2 sessions\. Exercise names come from logging with a Connect workout/);
+		assert.equal(
+			out.other_sets.unidentified,
+			"Unidentified: 5 sets, 32 reps in 2 sessions. Names come from logging with a Connect workout, or, on watches that support it, choosing the exercise when you finish a set.",
+		);
 		assert.deepEqual(out.notes, ["2 strength activities with no reps or weight recorded."]);
 		assert.deepEqual(out.exercises, []);
 	});
@@ -231,10 +234,10 @@ describe("top sets", () => {
 		});
 		// Session 1's sets have a heavier max than the summary, so only session 2 has detail.
 		const [one, two] = out.exercises[0].sessions;
-		assert.equal(one, `2026-03-01: 2 sets, 18 reps, max 30 kg, volume 500 kg, avg load 27.78 kg [${MISMATCH_NOTE}]`);
+		assert.equal(one, `2026-03-01: 2 sets, 18 reps, max 30 kg, volume 500 kg, avg load 27.8 kg [${MISMATCH_NOTE}]`);
 		assert.equal(
 			two,
-			"2026-03-08: 2 sets, 14 reps, max 32.5 kg, volume 435 kg, avg load 31.07 kg, top set 32.5 kg x 6 (est. 1RM 39 kg), sets: 30 kg x 8; 32.5 kg x 6",
+			"2026-03-08: 2 sets, 14 reps, max 32.5 kg, volume 435 kg, avg load 31.1 kg, top set 32.5 kg x 6 (est. 1RM 39 kg), sets: 30 kg x 8; 32.5 kg x 6",
 		);
 		const both = progress([session(1, "2026-03-01", [[...BENCH, 1, 10, 30, 300]]), session(2, "2026-03-08", [[...BENCH, 1, 6, 32.5, 195]])], {
 			sets: loaded({ 1: [bench(30, 10)], 2: [bench(32.5, 6)] }),
@@ -245,9 +248,20 @@ describe("top sets", () => {
 	it("lists unnamed sets without a top set or 1RM, and leaves them out of an exercise search", () => {
 		const s = [session(1, "2026-03-01", [["UNKNOWN", undefined, 2, 14, 30, 340]])];
 		const sets = loaded({ 1: [{ kg: 20, reps: 8 }, { kg: 30, reps: 6 }] });
-		assert.deepEqual(progress(s, { sets }).other_sets, ["2026-03-01: unnamed exercise: 20 kg x 8; 30 kg x 6"]);
-		assert.deepEqual(progress(s, { sets, exercise: "bench press" }).other_sets, []);
+		assert.deepEqual(progress(s, { sets }).other_sets.sessions, ["2026-03-01: unidentified: 2 sets, 14 reps | unnamed exercise: 20 kg x 8; 30 kg x 6"]);
+		assert.deepEqual(progress(s, { sets: loaded({ 1: [{ kg: 20, reps: 8 }] }) }).other_sets.sessions, [
+			`2026-03-01: unidentified: 2 sets, 14 reps [${MISMATCH_NOTE}]`,
+		]);
+		assert.deepEqual(progress(s).other_sets.sessions, [], "no per-session lines without set detail");
+		assert.deepEqual(progress(s, { sets, exercise: "bench press" }).other_sets.sessions, []);
 		assert.ok(!progress(s, { sets }).notes.some((n: string) => n.includes("1RM")), "no 1RM shown, so no note about it");
+	});
+
+	it("keeps a title the summary doesn't name in the same block, with its own top set", () => {
+		const s = [session(1, "2026-03-01", [[...BENCH, 1, 10, 30, 300]])];
+		const out = progress(s, { sets: loaded({ 1: [{ name: "Kurzhantel-Bankdruecken", kg: 30, reps: 10 }] }) });
+		assert.deepEqual(out.other_sets.sessions, ["2026-03-01: Kurzhantel-Bankdruecken: 30 kg x 10; top set 30 kg x 10 (est. 1RM 40 kg)"]);
+		assert.equal(out.other_sets.unidentified, undefined);
 	});
 
 	it("keeps a session without titles in the trend only, and says so", () => {
@@ -367,6 +381,23 @@ describe("get_strength_progress tool", () => {
 		assert.match(first.status, /^Partial: per-set detail for 1 session not loaded yet\. Call again/);
 		assert.equal((await call()).set_detail_complete, true);
 		assert.ok(!paths.some((p) => p.endsWith("/99")));
+	});
+
+	it("downloads only sessions whose summary has the exercise asked for", async () => {
+		const paths: string[] = [];
+		await callGarminTool(
+			"get_strength_progress",
+			(url) => {
+				if (!url.pathname.endsWith("/search/activities")) return paths.push(url.pathname), new Response(file);
+				return Response.json([
+					...list(),
+					activity(50, today, [["UNKNOWN", undefined, 1, 10, 32.5, 325]]),
+					activity(51, today, [["DEADLIFT", "BARBELL_DEADLIFT", 1, 5, 80, 400]]),
+				]);
+			},
+			{ exercise: "bench press", detail: "sets" },
+		);
+		assert.deepEqual(paths, ["/download-service/files/activity/1"]);
 	});
 
 	it("keeps the trend when Garmin rate-limits or has no file", async () => {

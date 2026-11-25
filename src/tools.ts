@@ -1160,9 +1160,9 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 					{ cacheTtl: 0 },
 				);
 				const sessions = list.map(parseSession);
-				// Nothing recorded means nothing to show from the file either.
+				// Only files that can add detail: something recorded, and the exercise asked for.
 				const wanted = sessions.filter(
-					(s) => s.recorded && (exercise === undefined || s.rows.some((r) => r.name === undefined || matchesExercise(exercise, r.search))),
+					(s) => s.recorded && (exercise === undefined || s.rows.some((r) => r.name !== undefined && matchesExercise(exercise, r.search))),
 				);
 				const chosen = wanted.slice(0, pbLimits.maxActivities);
 				const sets = detail === "sets" ? await loadSets(g, chosen, pbLimits, { describe: errorText }) : undefined;
