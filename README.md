@@ -477,7 +477,7 @@ Health and recovery tools work whatever you do. For activities, you get:
 | Running, walking, hiking | Also pace, splits, best efforts, first- vs second-half drift, personal bests; power when recorded. Running adds race time estimates and the link between recovery and performance |
 | Cycling, including e-bikes | Also speed, splits, best efforts, drift, power, and IF and TSS if you give your FTP |
 | Strength | Also sets, reps, weight and volume per exercise, top sets and estimated 1RM |
-| Swimming, rowing and others | Pool swims: totals and the watch's laps. Open-water swims with GPS: splits and best efforts. Rowing: also drift. |
+| Swimming, rowing and others | Pool swims: totals and the watch's laps. Open-water swims with GPS: splits and best efforts. Rowing: splits, best efforts, and first- vs second-half drift (speed and heart rate). |
 
 Some tools are built around running because pace, splits and race times suit it.
 They say so below.
