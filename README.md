@@ -4,8 +4,8 @@
 [![npm](https://img.shields.io/npm/v/garmin-mcp.svg)](https://www.npmjs.com/package/garmin-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![colincooperio/garmin-mcp MCP server](https://glama.ai/mcp/servers/colincooperio/garmin-mcp/badges/score.svg)](https://glama.ai/mcp/servers/colincooperio/garmin-mcp)
 
-Ask your AI assistant about your training, sleep and recovery, using your own
-Garmin data. It's an [MCP](https://modelcontextprotocol.io) server that gives
+Ask your AI assistant about your health, sleep, recovery and training in any
+sport, using your own Garmin data. It's an [MCP](https://modelcontextprotocol.io) server that gives
 Claude, ChatGPT and other assistants read-only access to your Garmin Connect
 data through Garmin's official
 [Personal API](https://developer.garmin.com/gc-developer-program/personal/).
@@ -39,22 +39,22 @@ Either way, you get:
 Ask things like:
 
 - _"Am I ready to train hard today?"_
-- _"How has my resting heart rate and HRV changed since May?"_
-- _"What were my running totals and average pace each month this year?"_
-- _"How much of my running is easy vs hard?"_
 - _"Which day of the week do I sleep worst?"_
-- _"Compare my last two long runs."_
+- _"How have my resting heart rate and HRV changed since May?"_
+- _"How stressed was I this month compared with last?"_
+- _"How much did I train each month this year, by sport?"_
+- _"Am I building up too fast?"_
+- _"What was my best 20-minute power on Sunday's ride?"_
+- _"Is my bench press going up?"_
+- _"How far have I swum since January?"_
 - _"Give me my km splits for Sunday's race. Did I negative split?"_
 - _"What are my 5k and 10k PBs this year, and what could I run a half in?"_
-- _"Am I building my mileage too fast?"_
-- _"Do I run worse after a bad night's sleep?"_
-- _"Is my bench press going up?"_
-- _"What was my best 20-minute power on Sunday's ride?"_
+- _"Compare my last two long hikes."_
 
 Ask in any language: Claude answers in yours.
 
-Here it is in Claude on a phone (cloud version), projecting a 10k time from
-recent runs:
+Here it is in Claude on a phone (cloud version), answering a running question:
+what 10k time recent runs point to.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/colincooperio/garmin-mcp/main/docs/demo.gif" width="320" alt="Claude on a phone answering 'how quickly could I run a 10k in April?' from Garmin running data">
@@ -91,7 +91,7 @@ single download: no Node, no config file.
 
 </details>
 <details>
-<summary><b>I want to ask from my phone, say right after a run</b></summary>
+<summary><b>I want to ask from my phone, say right after a workout</b></summary>
 
 Go cloud. Phone apps can't start a local process, so they need a server they
 can reach over the internet.
@@ -412,8 +412,8 @@ your own machine.
 The trade-off: the Personal API covers less. It has no golf scorecards,
 training plans, Garmin Training Status, Garmin's race predictor or personal
 records, gear, courses or write access. (This server computes its own personal
-bests and race estimates from your activity files.) The server tells the model this up front, so it says it isn't
-available instead of hunting for it.
+bests and race estimates from your activity files.) The server tells the model
+this up front, so it says it isn't available instead of hunting for it.
 
 ### Compared with a basic wrapper of the API
 
@@ -423,7 +423,7 @@ heart rate. This server does the heavy lifting itself:
 
 - **Questions answered in one call.** `get_readiness`, `summarize_wellness` and
   `summarize_activities` fetch, join and aggregate in the server. Five months of
-  runs comes back as about 1,000 characters instead of about 190,000.
+  activities comes back as about 1,000 characters instead of about 190,000.
 - **Compact by default.** Readable units, flattened rows, hourly heart rate
   instead of every reading. Every tool has `detail: "full"` for the raw data.
 - **Garmin's per-call limits handled.** Some endpoints only allow 28 or 31 days
@@ -443,16 +443,19 @@ heart rate. This server does the heavy lifting itself:
   cached indefinitely (only the derived tables, never the file). Follow-up questions skip Garmin. Locally,
   the cache is kept on disk, so it survives restarts (see
   [Security model](#local)).
-- **Things Garmin's API doesn't give you directly:** per-km/mile splits and
-  best efforts (computed from the activity's FIT file in the server, so a
-  two-hour run comes back as a few KB of tables, not 7,000 samples), training
-  load (acute:chronic ratio, and its trend week by week), cycling power (best
-  5 s to 60 min, normalized power, and TSS from your FTP), strength progress per
-  exercise, personal bests across runs with race time estimates, how sleep, HRV and Body Battery relate to your
-  running, time in heart-rate zones (for one activity, the
-  watch's own figures with the zones you had then, so they match Garmin
-  Connect), weekday patterns, distance-weighted pace, side-by-side activity
-  comparison.
+- **Things Garmin's API doesn't give you directly:**
+  - _Any sport:_ training load (acute:chronic ratio, and its trend week by
+    week), weekday patterns, side-by-side activity comparison, and time in
+    heart-rate zones (for one activity, the watch's own figures with the zones
+    you had then, so they match Garmin Connect).
+  - _Distance sports:_ per-km/mile splits and best efforts, computed from the
+    activity's FIT file in the server, so a two-hour activity comes back as a
+    few KB of tables, not 7,000 samples.
+  - _Cycling:_ best power from 5 s to 60 min, normalized power, and TSS from
+    your FTP.
+  - _Strength:_ progress per exercise, top sets and estimated 1RM.
+  - _Running:_ personal bests with race time estimates, and how sleep, HRV and
+    Body Battery relate to how you run.
 - **Prompt templates** for apps that support MCP prompts (such as Claude's
   connector menu): _Am I ready to train today?_, _Sleep report_, _Training
   review_, _Weekly check-in_, _Compare recent sessions_, _Strength review_.
@@ -464,20 +467,39 @@ All tools are read-only. Ranges can be up to 92 days (366 for the
 tools take `today` or `yesterday`. For the `summarize_*` tools, a `start_date`
 on its own means "since then": the range ends today.
 
-**Start here.** These answer common questions in one call with a small response:
+### By sport
+
+Health and recovery tools work whatever you do. For activities, you get:
+
+| Sport | What you can ask about |
+| --- | --- |
+| Every activity | Totals and trends, heart rate and time in zones, training load, the watch's laps, side-by-side comparison |
+| Running, walking, hiking | Also pace, splits, best efforts, first- vs second-half drift, personal bests; power when recorded. Running adds race time estimates and the link between recovery and performance |
+| Cycling, including e-bikes | Also speed, splits, best efforts, drift, power, and IF and TSS if you give your FTP |
+| Strength | Also sets, reps, weight and volume per exercise, top sets and estimated 1RM |
+| Swimming, rowing and others | Pool swims: totals and the watch's laps. Open-water swims with GPS: splits and best efforts. Rowing: also drift. |
+
+Some tools are built around running because pace, splits and race times suit it.
+They say so below.
+
+### Start here
+
+These answer common questions in one call with a small response:
 
 | Tool                    | Answers                                                                                                                                                                                                        |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `get_readiness`         | "How recovered am I?", "How did I sleep?": that night's sleep, HRV vs baseline, resting HR, Body Battery, each against your previous 7 days; training load; the last 3 days of training                        |
 | `summarize_wellness`    | Sleep, resting HR, HRV, stress, steps and Body Battery trends: by week, month, weekday or overall                                                                                                              |
 | `summarize_activities`  | Training totals: distance, time, pace, HR, training load and time in HR zones, by week, month, weekday or overall. By week or month, also the load trend: change on the previous period, acute:chronic ratio and flags for a fast build |
-| `compare_activities`    | 2–5 activities side by side                                                                                                                                                                                    |
-| `get_activity_analysis` | One activity from its original FIT file: per-km or per-mile splits, the watch's laps and workout reps, best efforts (1 km to marathon), time in HR zones as the watch recorded it, first- vs second-half drift, and power (average, normalized, best 5 s to 60 min; for rides, IF and TSS if you give your FTP) |
-| `get_personal_bests`    | Your fastest 1 km, 1 mile, 5 km, 10 km, half and marathon across many activities, with the next two best, plus race time estimates (Riegel). Computed from your activity files, not Garmin's official records |
+| `compare_activities`    | 2–5 activities of any kind, side by side |
+| `get_activity_analysis` | One activity from its original FIT file, with what fits its sport: time in HR zones as the watch recorded it, the watch's laps and workout reps, per-km or per-mile splits, best efforts (1 km to marathon), first- vs second-half drift, and power (average, normalized, best 5 s to 60 min; for rides, IF and TSS if you give your FTP) |
+| `get_personal_bests`    | Running by default: your fastest 1 km, 1 mile, 5 km, 10 km, half and marathon across many activities, with the next two best, plus race time estimates (Riegel). Computed from your activity files, not Garmin's official records |
 | `get_strength_progress` | "Is my bench going up?": sets, reps, max weight and volume per exercise and session, with the trend; optionally each session's sets, top set and estimated 1RM. See [Strength training](#strength-training) |
-| `analyze_recovery_impact` | Whether sleep, HRV or Body Battery relate to how you run: runs after your best third of nights against your worst third, compared at the same heart rate (against your own speed-for-HR line), with each group's HR, a correlation, and an honest "not enough data" |
+| `analyze_recovery_impact` | Running by default: whether sleep, HRV or Body Battery relate to how you run: runs after your best third of nights against your worst third, compared at the same heart rate (against your own speed-for-HR line), with each group's HR, a correlation, and an honest "not enough data" |
 
-**Detail.** Compact by default; pass `detail: "full"` for Garmin's raw data.
+### Detail
+
+Compact by default; pass `detail: "full"` for Garmin's raw data.
 
 | Tool                                                                                 | Data                                                                                                                                       |
 | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -519,11 +541,23 @@ period, with the load's change on the previous period. It flags a ratio above
 1.3 or a rise of more than 30%, and fetches the 28 days before your range so
 the first period's ratio is real.
 
-### Personal bests and race estimates
+### Strength training
+
+Log reps and weight on the watch, or add them to the activity in Garmin Connect
+afterwards. Use a Connect workout, or on watches that support it, choose the
+exercise when you finish a set: without one, sets often have no name and are
+listed as unidentified.
+
+Trends come from Garmin's summary of each session, so they include edits made
+in Connect. Individual sets, top sets and estimated 1RM come from the watch's
+own file, which never changes. If the two differ, you get the summary's figures
+and a note instead. The targets in a planned workout are never counted as done.
+
+### Running: personal bests and race estimates
 
 The Personal API has no personal records, so `get_personal_bests` works them
 out from your activity files: the fastest continuous stretch of each distance
-within each run, then the fastest across runs. It reads the newest 150 matching
+within each activity, then the fastest across them. It reads the newest 150 matching
 activities per call and skips manual entries and imports, which have no file.
 
 The first call over a long range is slow, because each activity's file is
@@ -542,18 +576,7 @@ or more), because it's most accurate over short jumps. When two distances are
 about equally close, the more recent effort is used. It never projects more
 than 4× up or down. They're estimates, not Garmin's race predictor.
 
-### Strength training
-
-Log reps and weight on the watch, or add them to the activity in Garmin Connect
-afterwards. Use a Connect workout to get exercise names: without one, sets
-often have no name and are listed as unidentified.
-
-Trends come from Garmin's summary of each session, so they include edits made
-in Connect. Individual sets, top sets and estimated 1RM come from the watch's
-own file, which never changes. If the two differ, you get the summary's figures
-and a note instead. The targets in a planned workout are never counted as done.
-
-### Recovery and performance
+### Running: recovery and performance
 
 `analyze_recovery_impact` pairs each run with the night before it and asks
 whether you run differently after your best nights than after your worst.
@@ -593,7 +616,7 @@ how to update your kind of install (see the update check in
   your config, `npx` fetches the newest version each time the app starts the
   server. (A config with plain `garmin-mcp` keeps reusing the copy `npx`
   already has: change it to `garmin-mcp@latest`.) To stay on a fixed version,
-  use `garmin-mcp@1.4.2` instead.
+  use `garmin-mcp@x.y.z` instead.
 - Cloud: run `npm run update` in the repo folder. It pulls the latest version,
   reinstalls, lists any new settings in `wrangler.example.jsonc` that your
   `wrangler.jsonc` lacks (it never edits your file), runs the tests and

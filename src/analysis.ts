@@ -700,7 +700,7 @@ export function formatDrift(a: Analysis, unit: Unit): Record<string, unknown> | 
 		out.decoupling_pct = round(((ef1 - ef2) / ef1) * 100, 1);
 	}
 	out.note =
-		`Halves split by timer time. ${foot ? "pace_change_pct > 0 means the second half was slower" : "speed_change_pct > 0 means the second half was faster"}. ` +
+		`Halves split by timer time. ${foot ? "pace_change_pct > 0 means the second half was slower" : "speed_change_pct > 0 means the second half was faster, < 0 slower"}. ` +
 		`decoupling_pct is ${foot ? "pace" : "speed"}:HR (aerobic) decoupling; under ~5% on a steady effort usually means good aerobic endurance.` +
 		(a.structured ? " This activity has warm-up/cool-down or rest laps, so the halves mix different efforts; read decoupling with care." : "");
 	return out;

@@ -135,7 +135,7 @@ describe("analysis by sport", () => {
 		assert.ok(out.best_efforts.every((e: any) => e.pace === undefined));
 		assert.equal(out.drift.speed_change_pct, 0);
 		assert.equal(out.drift.pace_change_pct, undefined);
-		assert.match(out.drift.note, /speed_change_pct > 0 means the second half was faster\. decoupling_pct is speed:HR/);
+		assert.match(out.drift.note, /speed_change_pct > 0 means the second half was faster, < 0 slower\. decoupling_pct is speed:HR/);
 
 		const ftp = format(a, { ftp: 250, weight: { kg: 75, date: "2026-01-01" } }).power;
 		const np = a.power!.normalized!;

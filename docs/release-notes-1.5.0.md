@@ -1,4 +1,4 @@
-**Cloud: action needed?** No: run `npm run update`.
+**Cloud:** no new settings or secrets. Run `npm run update` to deploy.
 
 ## New
 - **Strength progress.** Ask "is my bench going up?" or "how has my deadlift changed?". `get_strength_progress` shows sets, reps, max weight, volume and average load per exercise and session, with the trend. Ask about top sets to add each session's sets, top set and estimated 1RM. Log reps and weight on the watch or add them in Garmin Connect, and use a Connect workout to get exercise names. There's a new _Strength review_ prompt too.
