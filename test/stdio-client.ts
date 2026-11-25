@@ -8,9 +8,10 @@ export class StdioClient {
 	private nextId = 1;
 	stderr = "";
 
-	constructor(command: string, args: string[], cwd: string) {
+	constructor(command: string, args: string[], cwd: string, shell = false) {
 		this.proc = spawn(command, args, {
 			cwd,
+			shell,
 			// Only PATH and the key: proves nothing else (Cloudflare, GitHub) is needed.
 			// No update check, so tests never reach GitHub.
 			env: { PATH: process.env.PATH ?? "", GARMIN_API_KEY: "dummy", GARMIN_MCP_NO_UPDATE_CHECK: "1" },

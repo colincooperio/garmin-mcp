@@ -1,14 +1,14 @@
 // npm run setup / npm run update, driven with a fake command runner, scripted
 // answers and an in-memory file store: no wrangler, git, npm or network.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { PassThrough, Writable } from "node:stream";
 import { askValid, DEPLOYED, deployedLine, describeFailure, makeIO, missingSettings, readDeployedVersion, readKvId, readValue } from "../scripts/lib.mjs";
 import { runSetup } from "../scripts/setup.mjs";
 import { NEW_REMOTE, runUpdate } from "../scripts/update.mjs";
+import { readText } from "./platform.ts";
 
-const EXAMPLE = readFileSync(new URL("../wrangler.example.jsonc", import.meta.url), "utf8");
+const EXAMPLE = readText(new URL("../wrangler.example.jsonc", import.meta.url));
 const KV_ID = "0123456789abcdef0123456789abcdef";
 const ACCOUNT = { id: "a".repeat(32), name: "Me" };
 const GH_ID = "Ov23liAbCdEfGhIjKlMn";

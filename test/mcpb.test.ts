@@ -8,6 +8,7 @@ import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { InMemoryTransport } from "@modelcontextprotocol/server";
 import { createGarminServer } from "../src/server.ts";
+import { npm } from "./platform.ts";
 import { StdioClient } from "./stdio-client.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -137,7 +138,7 @@ describe("mcpb bundle", { timeout: 120_000 }, () => {
 	let client: StdioClient;
 
 	before(() => {
-		execFileSync("npm", ["run", "build:mcpb"], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+		npm(["run", "build:mcpb"], root);
 	});
 
 	after(() => client?.close());
