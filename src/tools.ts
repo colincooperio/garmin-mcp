@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { compactActivity, type LeadIn, loadTimeline, summarizeActivities, trainingLoadRatio } from "./activities.ts";
+import { activityTypeParams, compactActivity, type LeadIn, loadTimeline, summarizeActivities, trainingLoadRatio } from "./activities.ts";
 import { BEST_EFFORTS, formatAnalysis, type HrZones, loadAnalysis, SECTIONS, type Unit, zonesFromApi } from "./analysis.ts";
 import {
 	compactActivityDetail,
@@ -645,12 +645,12 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 			.string()
 			.regex(/^[a-z_]+$/)
 			.optional()
-			.describe("Parent type key, e.g. running, cycling, swimming, strength_training, walking, hiking."),
+			.describe("Parent type key, e.g. running, cycling, swimming, walking, hiking, fitness_equipment. For anything narrower use activity_subtype."),
 		activity_subtype: z
 			.string()
 			.regex(/^[a-z_]+$/)
 			.optional()
-			.describe("Subtype key within activity_type, e.g. trail_running, treadmill_running, road_cycling."),
+			.describe("Subtype key, e.g. trail_running, treadmill_running, road_biking, strength_training. Works without activity_type."),
 		event_type: z
 			.enum(["race", "training", "recreation", "fitness", "specialEvent", "uncategorized"])
 			.optional()
@@ -697,8 +697,7 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 	const filterParams = (f: Filters) => ({
 		startDate: f.start_date,
 		endDate: f.end_date,
-		activityType: f.activity_type,
-		activitySubType: f.activity_subtype,
+		...activityTypeParams(f.activity_type, f.activity_subtype),
 		eventType: f.event_type,
 		minDistance: f.min_distance_m,
 		maxDistance: f.max_distance_m,

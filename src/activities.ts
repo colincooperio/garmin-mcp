@@ -47,6 +47,60 @@ export function compactActivity(a: Raw): Raw {
 	return out;
 }
 
+/**
+ * Subtype keys people and models pass as activity_type. Garmin answers 400 to
+ * a subtype in activityType, or under the wrong parent, but takes a subtype on
+ * its own. Each was checked against the live API; keys not listed are passed
+ * through as given.
+ */
+export const ACTIVITY_SUBTYPES: ReadonlySet<string> = new Set([
+	"strength_training",
+	"yoga",
+	"pilates",
+	"hiit",
+	"elliptical",
+	"stair_climbing",
+	"indoor_cardio",
+	"indoor_rowing",
+	"rowing",
+	"trail_running",
+	"treadmill_running",
+	"track_running",
+	"indoor_running",
+	"virtual_run",
+	"street_running",
+	"ultra_run",
+	"road_biking",
+	"indoor_cycling",
+	"virtual_ride",
+	"mountain_biking",
+	"gravel_cycling",
+	"cyclocross",
+	"e_bike_fitness",
+	"e_bike_mountain",
+	"lap_swimming",
+	"open_water_swimming",
+	"casual_walking",
+	"speed_walking",
+]);
+
+/** Plausible keys Garmin doesn't have (400 as type or subtype), and what it calls them. */
+const SUBTYPE_ALIASES: Record<string, string> = { road_cycling: "road_biking" };
+
+const garminKey = (key: string | undefined) => (key !== undefined && Object.hasOwn(SUBTYPE_ALIASES, key) ? SUBTYPE_ALIASES[key] : key);
+
+/**
+ * The activityType / activitySubType search parameters for what was asked. A
+ * subtype given as the type moves to activitySubType, without a parent, since
+ * a subtype is enough. An explicit subtype wins over one given as the type.
+ */
+export function activityTypeParams(type?: string, subtype?: string): { activityType?: string; activitySubType?: string } {
+	const t = garminKey(type);
+	const sub = garminKey(subtype);
+	if (t !== undefined && ACTIVITY_SUBTYPES.has(t)) return { activityType: undefined, activitySubType: sub ?? t };
+	return { activityType: t, activitySubType: sub };
+}
+
 export type GroupBy = "week" | "month" | "weekday" | "total";
 
 function bucketKey(a: Raw, groupBy: GroupBy): string {
