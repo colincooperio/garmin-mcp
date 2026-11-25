@@ -5,6 +5,7 @@
  * Worker before it reaches the model.
  */
 
+import { GarminApiError } from "./garmin.ts";
 import { WEEK_ORDER, weekday, weekStart } from "./periods.ts";
 import { addDays } from "./ranges.ts";
 import { localStamp } from "./times.ts";
@@ -47,42 +48,34 @@ export function compactActivity(a: Raw): Raw {
 	return out;
 }
 
+/** Parent type keys. Garmin answers 400 to any of these as activitySubType. */
+const PARENT_TYPES: ReadonlySet<string> = new Set(["running", "cycling", "swimming", "walking", "hiking", "fitness_equipment"]);
+
 /**
- * Subtype keys people and models pass as activity_type. Garmin answers 400 to
- * a subtype in activityType, or under the wrong parent, but takes a subtype on
- * its own. Each was checked against the live API; keys not listed are passed
- * through as given.
+ * Subtype keys and their parent types. Garmin answers 400 to a subtype in
+ * activityType, or under the wrong parent, but takes a subtype on its own.
+ * Each was checked against the live API; keys not listed are passed through
+ * as given.
  */
-export const ACTIVITY_SUBTYPES: ReadonlySet<string> = new Set([
-	"strength_training",
-	"yoga",
-	"pilates",
-	"hiit",
-	"elliptical",
-	"stair_climbing",
-	"indoor_cardio",
-	"indoor_rowing",
-	"rowing",
-	"trail_running",
-	"treadmill_running",
-	"track_running",
-	"indoor_running",
-	"virtual_run",
-	"street_running",
-	"ultra_run",
-	"road_biking",
-	"indoor_cycling",
-	"virtual_ride",
-	"mountain_biking",
-	"gravel_cycling",
-	"cyclocross",
-	"e_bike_fitness",
-	"e_bike_mountain",
-	"lap_swimming",
-	"open_water_swimming",
-	"casual_walking",
-	"speed_walking",
-]);
+export const ACTIVITY_SUBTYPES: ReadonlyMap<string, string> = new Map(
+	Object.entries({
+		fitness_equipment: ["strength_training", "yoga", "pilates", "hiit", "elliptical", "stair_climbing", "indoor_cardio", "indoor_rowing"],
+		water_sports: ["rowing"],
+		running: ["trail_running", "treadmill_running", "track_running", "indoor_running", "virtual_run", "street_running", "ultra_run"],
+		cycling: [
+			"road_biking",
+			"indoor_cycling",
+			"virtual_ride",
+			"mountain_biking",
+			"gravel_cycling",
+			"cyclocross",
+			"e_bike_fitness",
+			"e_bike_mountain",
+		],
+		swimming: ["lap_swimming", "open_water_swimming"],
+		walking: ["casual_walking", "speed_walking"],
+	}).flatMap(([parent, subs]) => subs.map((sub): [string, string] => [sub, parent])),
+);
 
 /** Plausible keys Garmin doesn't have (400 as type or subtype), and what it calls them. */
 const SUBTYPE_ALIASES: Record<string, string> = { road_cycling: "road_biking" };
@@ -93,12 +86,35 @@ const garminKey = (key: string | undefined) => (key !== undefined && Object.hasO
  * The activityType / activitySubType search parameters for what was asked. A
  * subtype given as the type moves to activitySubType, without a parent, since
  * a subtype is enough. An explicit subtype wins over one given as the type.
+ * Combinations Garmin is known to reject throw, naming the valid form.
  */
 export function activityTypeParams(type?: string, subtype?: string): { activityType?: string; activitySubType?: string } {
 	const t = garminKey(type);
 	const sub = garminKey(subtype);
+	if (sub !== undefined && PARENT_TYPES.has(sub)) {
+		throw new GarminApiError(`${sub} is a type, not a subtype; pass it as activity_type, without activity_subtype.`);
+	}
 	if (t !== undefined && ACTIVITY_SUBTYPES.has(t)) return { activityType: undefined, activitySubType: sub ?? t };
+	const parent = sub === undefined ? undefined : ACTIVITY_SUBTYPES.get(sub);
+	if (t !== undefined && PARENT_TYPES.has(t) && parent !== undefined && parent !== t) {
+		throw new GarminApiError(
+			`${sub} is not a subtype of ${t}. Pass activity_subtype ${sub} on its own, or with activity_type ${parent}.`,
+		);
+	}
 	return { activityType: t, activitySubType: sub };
+}
+
+/** Replaces Garmin's bare 400 for a type or subtype key we don't know. */
+export function explainTypeError(err: unknown, params: Record<string, unknown>): unknown {
+	const { activityType: t, activitySubType: sub } = params;
+	if (!(err instanceof GarminApiError) || err.status !== 400 || (!t && !sub)) return err;
+	const given = [t && `activity_type ${t}`, sub && `activity_subtype ${sub}`].filter(Boolean).join(" with ");
+	return new GarminApiError(
+		`Garmin rejected this search (HTTP 400), most likely because it doesn't accept ${given}. ` +
+			`activity_type takes a parent type (${[...PARENT_TYPES].join(", ")}); a narrower sport, e.g. strength_training or trail_running, ` +
+			"goes in activity_subtype on its own or under its own parent.",
+		400,
+	);
 }
 
 export type GroupBy = "week" | "month" | "weekday" | "total";

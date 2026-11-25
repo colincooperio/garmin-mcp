@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { activityTypeParams, compactActivity, type LeadIn, loadTimeline, summarizeActivities, trainingLoadRatio } from "./activities.ts";
+import { activityTypeParams, compactActivity, explainTypeError, type LeadIn, loadTimeline, summarizeActivities, trainingLoadRatio } from "./activities.ts";
 import { BEST_EFFORTS, formatAnalysis, type HrZones, loadAnalysis, SECTIONS, type Unit, zonesFromApi } from "./analysis.ts";
 import {
 	compactActivityDetail,
@@ -280,6 +280,16 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 		return { data: mergeChunks(values), failed };
 	};
 
+	/** One page of the activity list; a rejected type or subtype gets a clear error. */
+	const searchPage = (
+		g: GarminClient,
+		params: Record<string, string | number | undefined>,
+		opts?: { cacheTtl?: number },
+	): Promise<unknown> =>
+		g.get(ACTIVITY_LIST, params, opts).catch((err) => {
+			throw explainTypeError(err, params);
+		});
+
 	/** Pages through the activity list until a short page; `capped` if it stopped at `cap`. */
 	const fetchActivities = async (
 		g: GarminClient,
@@ -288,7 +298,7 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 	) => {
 		const list: Record<string, unknown>[] = [];
 		for (let start = 0; start < cap; start += ACTIVITY_PAGE) {
-			const page = await g.get(ACTIVITY_LIST, { ...params, start, limit: ACTIVITY_PAGE });
+			const page = await searchPage(g, { ...params, start, limit: ACTIVITY_PAGE });
 			if (!Array.isArray(page)) break;
 			list.push(...page.filter(isObj));
 			if (page.length < ACTIVITY_PAGE) return { list, capped: false };
@@ -742,7 +752,7 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 		(args) =>
 			run(async () => {
 				const dates = args.period ? await resolveDates(args, 100_000) : undefined;
-				const list = await garmin().get(ACTIVITY_LIST, {
+				const list = await searchPage(garmin(), {
 					...filterParams(dates ? { ...args, start_date: dates[0], end_date: dates[1] } : args),
 					sortBy: args.sort_by,
 					sortOrder: args.sort_order,
