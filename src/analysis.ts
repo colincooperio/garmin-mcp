@@ -1,6 +1,7 @@
 /**
  * Derived tables from a decoded FIT activity: per-km/mile splits, the watch's
- * laps, best efforts, an HR histogram (for zones) and first/second-half drift.
+ * laps, best efforts, power, an HR histogram (for zones) and first/second-half
+ * drift.
  *
  * Two stages so the expensive part can be cached forever (the original file
  * never changes): analyzeActivity() produces a small unit-agnostic summary in
@@ -11,10 +12,11 @@
  */
 
 import { decodeFit, type FitActivity, FitError, type FitRecord, isFit, unzip } from "./fit.ts";
+import { type PowerSummary, summarizePower, trainingStress } from "./power.ts";
 import { round } from "./util.ts";
 
 /** Bump when analysis output changes, so cached results are recomputed. */
-export const ANALYSIS_VERSION = 2;
+export const ANALYSIS_VERSION = 3;
 
 export const KM = 1000;
 export const MILE = 1609.344;
@@ -37,9 +39,21 @@ export const BEST_EFFORTS: [label: string, metres: number][] = [
 ];
 
 /** Foot sports: FIT cadence is strides/min (one leg), doubled to steps/min, and speed reads as pace. */
-const STEP_SPORTS = new Set(["running", "walking", "hiking", "training", "generic"]);
-/** Drift needs a real distance to say anything. */
-const MIN_DRIFT_METRES = 1000;
+const FOOT_SPORTS = new Set(["running", "walking", "hiking"]);
+/**
+ * FIT files gym work (strength, cardio, yoga) under "training", and whatever a
+ * watch or app has no sport for under "generic". Some are on foot and cover
+ * ground, so with at least MIN_DISTANCE_M they're treated as foot sports.
+ * Below that, distance is incidental (pacing between sets) and cadence isn't
+ * steps: no doubling, no pace, no distance best efforts. Strength never counts
+ * as covering ground, however far the watch says.
+ */
+const MAYBE_FOOT_SPORTS = new Set(["training", "generic"]);
+const SUB_SPORT_STRENGTH = 20;
+/** The least distance that says anything, for drift and for the rule above. */
+const MIN_DISTANCE_M = 1000;
+/** Steady endurance sports, where comparing halves means something. */
+const DRIFT_SPORTS = new Set(["running", "cycling", "walking", "hiking", "rowing"]);
 
 // ---- timeline ---------------------------------------------------------------
 
@@ -260,6 +274,9 @@ export interface Analysis {
 	 */
 	recordedZones?: HrZones & { seconds: [number, number, number, number, number, number] };
 	drift?: { first: Half; second: Half };
+	power?: PowerSummary;
+	/** Set when the distance, if any, isn't the point of the activity (see MAYBE_FOOT_SPORTS): no pace, speed or best efforts. */
+	incidentalDistance?: boolean;
 	/** True when laps include warm-up, cool-down, rest or recovery. */
 	structured: boolean;
 }
@@ -344,7 +361,7 @@ export function hrHistogram(s: Sample[]): [number, number][] {
 export function halves(s: Sample[]): { first: Half; second: Half } | undefined {
 	const start = s[0]?.t ?? 0;
 	const end = s.at(-1)?.t ?? 0;
-	if (end - start < 120 || (s.at(-1)?.d ?? 0) < MIN_DRIFT_METRES) return undefined;
+	if (end - start < 120 || (s.at(-1)?.d ?? 0) < MIN_DISTANCE_M) return undefined;
 	const mid = start + (end - start) / 2;
 	const dMid = distanceAtTime(s, mid);
 	const half = (from: number, to: number, distance: number): Half => ({
@@ -357,7 +374,10 @@ export function halves(s: Sample[]): { first: Half; second: Half } | undefined {
 
 export function analyzeActivity(fit: FitActivity): Analysis {
 	const s = buildTimeline(fit.records, fit.events);
-	const steps = STEP_SPORTS.has(fit.sport ?? "generic");
+	const sport = fit.sport ?? "generic";
+	const incidentalDistance =
+		MAYBE_FOOT_SPORTS.has(sport) && (fit.subSport === SUB_SPORT_STRENGTH || (s.at(-1)?.d ?? 0) < MIN_DISTANCE_M);
+	const steps = FOOT_SPORTS.has(sport) || (MAYBE_FOOT_SPORTS.has(sport) && !incidentalDistance);
 	if (steps) for (const x of s) if (x.cad !== undefined) x.cad *= 2;
 	const hasDistance = (s.at(-1)?.d ?? 0) > 0;
 	const time = s.length ? s.at(-1)!.t - s[0]!.t : 0;
@@ -380,7 +400,7 @@ export function analyzeActivity(fit: FitActivity): Analysis {
 		};
 	});
 
-	const bestEfforts = hasDistance
+	const bestEfforts = hasDistance && !incidentalDistance
 		? BEST_EFFORTS.flatMap(([label, metres]) => {
 				const e = bestEffort(s, metres);
 				if (!e) return [];
@@ -390,6 +410,7 @@ export function analyzeActivity(fit: FitActivity): Analysis {
 		: undefined;
 
 	const zones = recordedZones(fit);
+	const power = summarizePower(s);
 	return {
 		v: ANALYSIS_VERSION,
 		sport: fit.sport,
@@ -402,7 +423,9 @@ export function analyzeActivity(fit: FitActivity): Analysis {
 		bestEfforts,
 		hrHistogram: hrHistogram(s),
 		...(zones ? { recordedZones: zones } : {}), // omitted, not undefined: the analysis is cached as JSON
-		drift: halves(s),
+		drift: DRIFT_SPORTS.has(sport) ? halves(s) : undefined,
+		...(power ? { power } : {}),
+		...(incidentalDistance ? { incidentalDistance } : {}),
 		structured: laps.some((l) => ["warmup", "cooldown", "rest", "recovery"].includes(l.intensity ?? "")),
 	};
 }
@@ -507,7 +530,7 @@ export async function loadAnalysis(src: AnalysisSource, activityId: string): Pro
 // ---- formatting ---------------------------------------------------------------
 
 export type Unit = "km" | "mile";
-export const SECTIONS = ["splits", "laps", "best_efforts", "hr_zones", "drift"] as const;
+export const SECTIONS = ["splits", "laps", "best_efforts", "hr_zones", "drift", "power"] as const;
 export type Section = (typeof SECTIONS)[number];
 
 /** HR zone floors (zone 1-5) and the max HR that caps zone 5. */
@@ -555,8 +578,9 @@ export function pace(metres: number, seconds: number, unit: Unit): string | unde
 	return `${clock((seconds / metres) * (unit === "km" ? KM : MILE))} /${unit === "km" ? "km" : "mi"}`;
 }
 
-/** Pace for foot sports, speed (km/h or mph) for everything else. */
+/** Pace for foot sports, speed (km/h or mph) for everything else, neither when distance is incidental. */
 function paceOrSpeed(a: Analysis, metres: number, seconds: number, unit: Unit): Record<string, unknown> {
+	if (a.incidentalDistance) return {};
 	if (a.cadenceUnit === "spm") return { pace: pace(metres, seconds, unit) };
 	const perHour = seconds > 0 ? (metres / seconds) * 3.6 * (unit === "km" ? 1 : KM / MILE) : undefined;
 	return { [unit === "km" ? "speed_kmh" : "speed_mph"]: perHour === undefined ? undefined : round(perHour, 1) };
@@ -679,10 +703,42 @@ export function formatDrift(a: Analysis, unit: Unit): Record<string, unknown> | 
 	return out;
 }
 
+export interface PowerContext {
+	/** From the caller: the Personal API has no FTP. */
+	ftp?: number;
+	weight?: { kg: number; date?: string };
+}
+
+/** Power figures. IF and TSS are for rides only: FTP means cycling power. */
+export function formatPower(p: PowerSummary, a: Analysis, ctx: PowerContext = {}): Record<string, unknown> {
+	const np = p.normalized;
+	const cycling = a.sport === "cycling";
+	const stress = cycling && np !== undefined && ctx.ftp ? trainingStress(np, ctx.ftp, a.time) : undefined;
+	const notes: string[] = [];
+	if (np === undefined) notes.push("Normalized power needs at least 10 minutes of power data.");
+	if (cycling && !ctx.ftp) notes.push("Intensity factor and TSS need your FTP, which Garmin's Personal API doesn't provide: pass ftp_watts.");
+	if (!cycling && ctx.ftp) notes.push("Intensity factor and TSS are only given for rides, since ftp_watts is a cycling figure.");
+	if (ctx.weight) notes.push(`w_per_kg uses your latest Garmin weight, ${round(ctx.weight.kg, 1)} kg${ctx.weight.date ? ` (${ctx.weight.date})` : ""}.`);
+	return {
+		avg_w: r0(p.avg),
+		normalized_w: r0(np),
+		intensity_factor: stress && round(stress.intensityFactor, 2),
+		tss: stress && round(stress.tss, 1),
+		ftp_w: stress && ctx.ftp,
+		best: p.best.map((b) => ({
+			duration: b.label,
+			watts: r0(b.watts),
+			w_per_kg: ctx.weight && round(b.watts / ctx.weight.kg, 2),
+			starts_at: clock(b.startTime),
+		})),
+		notes: notes.length ? notes : undefined,
+	};
+}
+
 /** Builds the tool response for the requested sections. */
 export function formatAnalysis(
 	a: Analysis,
-	opts: { unit: Unit; include: readonly Section[]; zones?: HrZones; zonesUnavailable?: string },
+	opts: { unit: Unit; include: readonly Section[]; zones?: HrZones; zonesUnavailable?: string; power?: PowerContext },
 ): Record<string, unknown> {
 	const { unit, include } = opts;
 	const out: Record<string, unknown> = {
@@ -701,14 +757,20 @@ export function formatAnalysis(
 				out.laps = formatLaps(a, unit);
 				break;
 			case "best_efforts":
-				out.best_efforts = formatBestEfforts(a, unit);
+				if (a.incidentalDistance) unavailable.push("best_efforts: distance isn't meaningful for this kind of activity");
+				else out.best_efforts = formatBestEfforts(a, unit);
 				break;
 			case "hr_zones":
 				if (a.recordedZones || opts.zones) out.hr_zones = formatHrZones(a, opts.zones);
 				else unavailable.push(`hr_zones: ${opts.zonesUnavailable ?? "no HR zones set in Garmin Connect"}`);
 				break;
 			case "drift":
-				out.drift = formatDrift(a, unit);
+				if (!DRIFT_SPORTS.has(a.sport ?? "generic")) unavailable.push("drift: only for steady endurance sports (running, cycling, walking, hiking, rowing)");
+				else out.drift = formatDrift(a, unit);
+				break;
+			case "power":
+				if (a.power) out.power = formatPower(a.power, a, opts.power);
+				else unavailable.push("power: no power data in this activity");
 				break;
 		}
 	}

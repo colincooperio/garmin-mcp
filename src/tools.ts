@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { activityTypeParams, compactActivity, explainTypeError, type LeadIn, loadTimeline, summarizeActivities, trainingLoadRatio } from "./activities.ts";
-import { BEST_EFFORTS, formatAnalysis, type HrZones, loadAnalysis, SECTIONS, type Unit, zonesFromApi } from "./analysis.ts";
+import { BEST_EFFORTS, formatAnalysis, type HrZones, loadAnalysis, type PowerContext, SECTIONS, type Unit, zonesFromApi } from "./analysis.ts";
 import {
 	compactActivityDetail,
 	compactBodyBattery,
@@ -20,7 +20,7 @@ import { loadSets, matchesExercise, parseSession, strengthProgress } from "./str
 import { addDays, daysBetween, mapLimit, mergeChunks, splitRange } from "./ranges.ts";
 import { localizeTimes } from "./times.ts";
 import type { UpdateNotice } from "./update.ts";
-import { isObj } from "./util.ts";
+import { isObj, num } from "./util.ts";
 import { buildReadiness, joinByDate, summarizeWellness } from "./wellness.ts";
 
 /** Longest date range a single call may cover. Split longer questions into chunks. */
@@ -1075,17 +1075,36 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 			run(async () => localizeTimes(await garmin().get(`${ACTIVITY(activity_id)}/workouts`), undefined, await userTimeZone())),
 	);
 
+	/** The user's latest weight, for W/kg; undefined when none is recorded or it can't be read. */
+	const latestWeight = async (): Promise<PowerContext["weight"]> => {
+		try {
+			const today = await userToday();
+			const w = await garmin().get(`/weight-service/weight/range/${addDays(today, -30)}/${today}`, { includeAll: "true" }, { cacheTtl: 3600 });
+			if (!isObj(w)) return undefined;
+			// Grams. Days are listed newest first in practice; sort rather than rely on it.
+			const days = (Array.isArray(w.dailyWeightSummaries) ? w.dailyWeightSummaries.filter(isObj) : [])
+				.map((d) => ({ date: String(d.summaryDate ?? ""), grams: isObj(d.latestWeight) ? num(d.latestWeight.weight) : undefined }))
+				.sort((x, y) => y.date.localeCompare(x.date));
+			const prev = isObj(w.previousDateWeight) ? w.previousDateWeight : {};
+			const found = days.find((d) => d.grams) ?? { date: String(prev.calendarDate ?? ""), grams: num(prev.weight) };
+			return found.grams ? { kg: found.grams / 1000, date: found.date || undefined } : undefined;
+		} catch {
+			return undefined;
+		}
+	};
+
 	server.registerTool(
 		"get_activity_analysis",
 		{
-			title: "Activity analysis (splits, laps, best efforts)",
+			title: "Activity analysis (splits, laps, best efforts, power)",
 			description:
-				"Per-km or per-mile splits, the watch's laps / workout reps, best efforts, time in HR zones and first-vs-second-half drift for ONE recorded activity, " +
-				"computed from Garmin's original FIT file. Use for 'my km splits', 'did I negative split', 'fastest 5 km in this run', 'how long in zone 2', 'did my HR drift'. " +
-				"splits: one row per km/mile (time, pace, cumulative time, avg/max HR, cadence, power, elevation gain/loss), timer time so pauses don't count, final partial split labelled with its distance. " +
+				"Per-km or per-mile splits, the watch's laps / workout reps, best efforts, time in HR zones and first-vs-second-half drift and power for ONE recorded activity, " +
+				"computed from Garmin's original FIT file. Use for 'my km splits', 'did I negative split', 'fastest 5 km', 'how long in zone 2', 'did my HR drift', 'my 20 min power', 'what was my NP'. " +
+				"splits: one row per km/mile (time, pace or speed, HR, cadence, power, elevation), timer time so pauses don't count, final partial split labelled. " +
 				"laps: the watch's own laps with intensity (warmup/active/cooldown/rest) and trigger (manual, distance, ...). " +
 				"best_efforts: fastest continuous 1 km, 1 mile, 5 km, 10 km, half and marathon the activity is long enough for, with where each started. " +
-				"hr_zones: time in each HR zone, as the watch recorded it with the zones in effect then (matches Garmin Connect and summarize_activities). drift: first vs second half pace, HR and aerobic decoupling. " +
+				"hr_zones: time in each HR zone, as the watch recorded it (matches Garmin Connect and summarize_activities). drift: first vs second half pace or speed, HR and aerobic decoupling. " +
+				"power: average, normalized (NP), best 5 s to 60 min, and for rides IF and TSS when ftp_watts is given. " +
 				"Get the ID from search_activities. Manual entries and GPX/TCX imports return a short 'unavailable' note.",
 			inputSchema: activityId.extend({
 				include: z
@@ -1097,10 +1116,17 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 					.enum(["km", "mile"])
 					.optional()
 					.describe("Split length and pace unit. Defaults to the user's Garmin unit setting."),
+				ftp_watts: z
+					.number()
+					.int()
+					.min(30)
+					.max(700)
+					.optional()
+					.describe("The user's cycling FTP, for IF and TSS. Only if they've given it; Garmin's API doesn't have it."),
 			}),
 			annotations: { ...READ_ONLY, title: "Activity analysis" },
 		},
-		({ activity_id, include, unit }) =>
+		({ activity_id, include, unit, ftp_watts }) =>
 			run(async () => {
 				const g = garmin();
 				const loaded = await loadAnalysis(g, activity_id);
@@ -1120,7 +1146,9 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 						zonesUnavailable = errorText(err);
 					}
 				}
-				return { activity_id, ...formatAnalysis(a, { unit: resolvedUnit, include, zones, zonesUnavailable }) };
+				const power: PowerContext = { ftp: ftp_watts };
+				if (include.includes("power") && a.power) power.weight = await latestWeight();
+				return { activity_id, ...formatAnalysis(a, { unit: resolvedUnit, include, zones, zonesUnavailable, power }) };
 			}),
 	);
 

@@ -42,8 +42,10 @@ export interface SynthSet {
 }
 
 export interface SynthActivity {
-	/** FIT sport enum: 1 running, 2 cycling. */
+	/** FIT sport enum: 1 running, 2 cycling, 10 training, 17 hiking. */
 	sport?: number;
+	/** FIT sub-sport enum: 20 strength. */
+	subSport?: number;
 	records: SynthRecord[];
 	/** [secondsAfterT0, eventType] for timer events: 0 start, 1 stop, 4 stopAll. */
 	timer?: [number, number][];
@@ -129,6 +131,7 @@ export function buildFit(a: SynthActivity): Uint8Array {
 	const sessionFields: Field[] = [
 		[253, UINT32, T0],
 		[5, ENUM, a.sport ?? 1],
+		[6, ENUM, a.subSport],
 	];
 	define(0, 18, sessionFields);
 	data(0, sessionFields);

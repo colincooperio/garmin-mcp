@@ -59,7 +59,7 @@ export const PROMPTS: PromptDef[] = [
 	{
 		name: "training_review",
 		title: "Training review",
-		description: "Volume, pace, intensity distribution and load trend for a sport over a period.",
+		description: "Volume, intensity distribution and load trend for a sport over a period, with pace, speed or power where they apply.",
 		arguments: [
 			PERIOD_ARG,
 			{ name: "activity_type", description: "The sport, e.g. running, cycling or swimming, or 'all' for every sport." },
@@ -68,7 +68,9 @@ export const PROMPTS: PromptDef[] = [
 			"Review my training over this period: ${arguments.period}. Sport: ${arguments.activity_type}. " +
 			`${PERIOD_RULE} ` +
 			"Call summarize_activities with group_by 'week', with activity_type set to that sport's Garmin type key (e.g. running, cycling), or no activity_type if the sport is 'all'. " +
-			"Cover volume and consistency, pace trend, time in HR zones (how much is easy vs hard), the load trend (weekly change and acute:chronic ratio), and the longest/fastest efforts. " +
+			"Cover volume and consistency, time in HR zones (how much is easy vs hard) and the load trend (weekly change and acute:chronic ratio). " +
+			"For running, walking or hiking, add the pace trend and the longest and fastest efforts. For cycling, add the speed trend, power where recorded, and the longest rides. " +
+			"For any other sport, or all sports, look at frequency, duration and heart rate instead of pace. " +
 			"Use search_activities with sort_by only if you need to name a specific session.",
 	},
 	{
