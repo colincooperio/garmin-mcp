@@ -2,7 +2,7 @@
 	"manifest_version": "0.3",
 	"name": "garmin-mcp",
 	"display_name": "Garmin MCP",
-	"version": "1.4.3",
+	"version": "1.5.0",
 	"description": "Ask Claude about your Garmin training, sleep and recovery. Uses Garmin's official Personal API: no password, read-only.",
 	"long_description": "Ask Claude about your training, sleep and recovery, using your own Garmin data. It gives Claude read-only access to your Garmin Connect data through Garmin's official Personal API, using an API key you can revoke at any time instead of your Garmin password, and data goes straight from Garmin to your computer. To get a key, open Garmin Connect > Settings > Personal API Token and create one. Not affiliated with or endorsed by Garmin; \"Garmin\" and \"Garmin Connect\" are trademarks of Garmin Ltd. or its subsidiaries.",
 	"author": {
@@ -71,7 +71,8 @@
 		{ "name": "get_activity_workouts", "description": "The planned workout linked to one recorded activity, if any." },
 		{ "name": "get_personal_bests", "description": "Fastest 1 km to marathon across your activities, with the next two best efforts and Riegel race estimates; computed from your activity files, not Garmin's official records." },
 		{ "name": "analyze_recovery_impact", "description": "Whether sleep, HRV or Body Battery relate to how you run: runs after your best third of nights vs your worst third, compared at the same heart rate." },
-		{ "name": "get_activity_analysis", "description": "Per-km or per-mile splits, the watch's laps / workout reps, best efforts, time in HR zones and first-vs-second-half drift for one recorded activity, computed from Garmin's original FIT file." },
+		{ "name": "get_activity_analysis", "description": "Per-km or per-mile splits, the watch's laps / workout reps, best efforts, time in HR zones, first-vs-second-half drift and power for one recorded activity, computed from Garmin's original FIT file." },
+		{ "name": "get_strength_progress", "description": "Strength progress per exercise: sets, reps, max weight and volume per session, the trend, and optionally top sets and estimated 1RM." },
 		{ "name": "get_nutrition", "description": "Food log for one day: nutrition goals, calories and nutrients consumed, and per-meal breakdown." },
 		{ "name": "get_weight_goals", "description": "The weight goal the user set in Garmin Connect that was in effect over a range, with its goal range." },
 		{ "name": "get_menstrual_cycle", "description": "Menstrual cycle tracking as of one date: Garmin's cycle summary and day view." }
@@ -90,9 +91,9 @@
 		},
 		{
 			"name": "training_review",
-			"description": "Volume, pace, intensity distribution and load trend for a sport over a period.",
+			"description": "Volume, intensity distribution and load trend for a sport over a period, with pace, speed or power where they apply.",
 			"arguments": ["period", "activity_type"],
-			"text": "Review my training over this period: ${arguments.period}. Sport: ${arguments.activity_type}. Use the closest named period (last_7_days, last_28_days, last_30_days, last_90_days, last_180_days, last_365_days, this_week, last_week, this_month, last_month, this_year, last_year), or start_date/end_date if none fits. Call summarize_activities with group_by 'week', with activity_type set to that sport's Garmin type key (e.g. running, cycling), or no activity_type if the sport is 'all'. Cover volume and consistency, pace trend, time in HR zones (how much is easy vs hard), the load trend (weekly change and acute:chronic ratio), and the longest/fastest efforts. Use search_activities with sort_by only if you need to name a specific session."
+			"text": "Review my training over this period: ${arguments.period}. Sport: ${arguments.activity_type}. Use the closest named period (last_7_days, last_28_days, last_30_days, last_90_days, last_180_days, last_365_days, this_week, last_week, this_month, last_month, this_year, last_year), or start_date/end_date if none fits. Call summarize_activities with group_by 'week', with activity_type set to that sport's Garmin type key (e.g. running, cycling), or no activity_type if the sport is 'all'. Cover volume and consistency, time in HR zones (how much is easy vs hard) and the load trend (weekly change and acute:chronic ratio). For running, walking or hiking, add the pace trend and the longest and fastest efforts. For cycling, add the speed trend, power where recorded, and the longest rides. For any other sport, or all sports, look at frequency, duration and heart rate instead of pace. Use search_activities with sort_by only if you need to name a specific session."
 		},
 		{
 			"name": "weekly_checkin",
@@ -104,6 +105,12 @@
 			"description": "Side-by-side comparison of my most recent sessions of one type.",
 			"arguments": ["activity_type"],
 			"text": "Compare my most recent sessions of this sport: ${arguments.activity_type}. Call search_activities with activity_type set to that sport's Garmin type key (e.g. running) and limit 5, then compare_activities on the ones of similar distance. Show pace, HR, cadence and training effect side by side and say what changed."
+		},
+		{
+			"name": "strength_review",
+			"description": "How one lift, or all of them, has changed over the last 8 weeks: weight, volume, top sets.",
+			"arguments": ["exercise"],
+			"text": "Review my strength training over the last 8 weeks. Exercise: ${arguments.exercise}. Call get_strength_progress once with detail 'sets', with exercise set to that name, or no exercise if it is 'all'. Say what went up, held or dropped in max weight, volume and top set, treat estimated 1RM as an estimate, and don't read anything into sessions with nothing recorded. If set_detail_complete is false, say the top sets are partial. Keep it short."
 		}
 	],
 	"keywords": [

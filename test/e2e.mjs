@@ -698,7 +698,7 @@ try {
 	await step("prompt templates are listed", async () => {
 		const { json } = await mcp(accessToken, "prompts/list", {}, session);
 		const names = json.result.prompts.map((p) => p.name);
-		for (const n of ["readiness_check", "sleep_report", "training_review", "weekly_checkin", "compare_recent"]) {
+		for (const n of ["readiness_check", "sleep_report", "training_review", "weekly_checkin", "compare_recent", "strength_review"]) {
 			assert.ok(names.includes(n), `missing prompt ${n}`);
 		}
 		const got = await mcp(accessToken, "prompts/get", { name: "training_review", arguments: { period: "last 90 days", activity_type: "cycling" } }, session);

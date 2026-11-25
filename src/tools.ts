@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { compactActivity, type LeadIn, loadTimeline, summarizeActivities, trainingLoadRatio } from "./activities.ts";
-import { BEST_EFFORTS, formatAnalysis, type HrZones, loadAnalysis, SECTIONS, type Unit, zonesFromApi } from "./analysis.ts";
+import { activityTypeParams, compactActivity, explainTypeError, type LeadIn, loadTimeline, summarizeActivities, trainingLoadRatio } from "./activities.ts";
+import { BEST_EFFORTS, formatAnalysis, type HrZones, loadAnalysis, type PowerContext, SECTIONS, type Unit, zonesFromApi } from "./analysis.ts";
 import {
 	compactActivityDetail,
 	compactBodyBattery,
@@ -16,10 +16,11 @@ import { GarminApiError, type GarminClient } from "./garmin.ts";
 import { CAVEAT, compareByMeasure, MEASURES, pairRuns, sourcesFor } from "./recovery.ts";
 import { type LoadLimits, loadMany, PB_DISTANCES, personalBests, PREDICTION_WINDOW_DAYS, racePredictions } from "./records.ts";
 import { PERIODS, type Period, resolvePeriod, todayIn } from "./periods.ts";
+import { loadSets, matchesExercise, parseSession, strengthProgress } from "./strength.ts";
 import { addDays, daysBetween, mapLimit, mergeChunks, splitRange } from "./ranges.ts";
 import { localizeTimes } from "./times.ts";
 import type { UpdateNotice } from "./update.ts";
-import { isObj } from "./util.ts";
+import { isObj, num } from "./util.ts";
 import { buildReadiness, joinByDate, summarizeWellness } from "./wellness.ts";
 
 /** Longest date range a single call may cover. Split longer questions into chunks. */
@@ -280,15 +281,26 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 		return { data: mergeChunks(values), failed };
 	};
 
+	/** One page of the activity list; a rejected type or subtype gets a clear error. */
+	const searchPage = (
+		g: GarminClient,
+		params: Record<string, string | number | undefined>,
+		opts?: { cacheTtl?: number },
+	): Promise<unknown> =>
+		g.get(ACTIVITY_LIST, params, opts).catch((err) => {
+			throw explainTypeError(err, params);
+		});
+
 	/** Pages through the activity list until a short page; `capped` if it stopped at `cap`. */
 	const fetchActivities = async (
 		g: GarminClient,
 		params: Record<string, string | number | undefined>,
 		cap = MAX_SUMMARY_ACTIVITIES,
+		opts?: { cacheTtl?: number },
 	) => {
 		const list: Record<string, unknown>[] = [];
 		for (let start = 0; start < cap; start += ACTIVITY_PAGE) {
-			const page = await g.get(ACTIVITY_LIST, { ...params, start, limit: ACTIVITY_PAGE });
+			const page = await searchPage(g, { ...params, start, limit: ACTIVITY_PAGE }, opts);
 			if (!Array.isArray(page)) break;
 			list.push(...page.filter(isObj));
 			if (page.length < ACTIVITY_PAGE) return { list, capped: false };
@@ -645,12 +657,12 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 			.string()
 			.regex(/^[a-z_]+$/)
 			.optional()
-			.describe("Parent type key, e.g. running, cycling, swimming, strength_training, walking, hiking."),
+			.describe("Parent type key, e.g. running, cycling, swimming, walking, hiking, fitness_equipment. For anything narrower use activity_subtype."),
 		activity_subtype: z
 			.string()
 			.regex(/^[a-z_]+$/)
 			.optional()
-			.describe("Subtype key within activity_type, e.g. trail_running, treadmill_running, road_cycling."),
+			.describe("Subtype key, e.g. trail_running, treadmill_running, road_biking, strength_training. Works without activity_type."),
 		event_type: z
 			.enum(["race", "training", "recreation", "fitness", "specialEvent", "uncategorized"])
 			.optional()
@@ -697,8 +709,7 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 	const filterParams = (f: Filters) => ({
 		startDate: f.start_date,
 		endDate: f.end_date,
-		activityType: f.activity_type,
-		activitySubType: f.activity_subtype,
+		...activityTypeParams(f.activity_type, f.activity_subtype),
 		eventType: f.event_type,
 		minDistance: f.min_distance_m,
 		maxDistance: f.max_distance_m,
@@ -743,7 +754,7 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 		(args) =>
 			run(async () => {
 				const dates = args.period ? await resolveDates(args, 100_000) : undefined;
-				const list = await garmin().get(ACTIVITY_LIST, {
+				const list = await searchPage(garmin(), {
 					...filterParams(dates ? { ...args, start_date: dates[0], end_date: dates[1] } : args),
 					sortBy: args.sort_by,
 					sortOrder: args.sort_order,
@@ -1064,17 +1075,36 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 			run(async () => localizeTimes(await garmin().get(`${ACTIVITY(activity_id)}/workouts`), undefined, await userTimeZone())),
 	);
 
+	/** The user's latest weight, for W/kg; undefined when none is recorded or it can't be read. */
+	const latestWeight = async (): Promise<PowerContext["weight"]> => {
+		try {
+			const today = await userToday();
+			const w = await garmin().get(`/weight-service/weight/range/${addDays(today, -30)}/${today}`, { includeAll: "true" }, { cacheTtl: 3600 });
+			if (!isObj(w)) return undefined;
+			// Grams. Days are listed newest first in practice; sort rather than rely on it.
+			const days = (Array.isArray(w.dailyWeightSummaries) ? w.dailyWeightSummaries.filter(isObj) : [])
+				.map((d) => ({ date: String(d.summaryDate ?? ""), grams: isObj(d.latestWeight) ? num(d.latestWeight.weight) : undefined }))
+				.sort((x, y) => y.date.localeCompare(x.date));
+			const prev = isObj(w.previousDateWeight) ? w.previousDateWeight : {};
+			const found = days.find((d) => d.grams) ?? { date: String(prev.calendarDate ?? ""), grams: num(prev.weight) };
+			return found.grams ? { kg: found.grams / 1000, date: found.date || undefined } : undefined;
+		} catch {
+			return undefined;
+		}
+	};
+
 	server.registerTool(
 		"get_activity_analysis",
 		{
-			title: "Activity analysis (splits, laps, best efforts)",
+			title: "Activity analysis (splits, laps, best efforts, power)",
 			description:
-				"Per-km or per-mile splits, the watch's laps / workout reps, best efforts, time in HR zones and first-vs-second-half drift for ONE recorded activity, " +
-				"computed from Garmin's original FIT file. Use for 'my km splits', 'did I negative split', 'fastest 5 km in this run', 'how long in zone 2', 'did my HR drift'. " +
-				"splits: one row per km/mile (time, pace, cumulative time, avg/max HR, cadence, power, elevation gain/loss), timer time so pauses don't count, final partial split labelled with its distance. " +
+				"Per-km or per-mile splits, the watch's laps / workout reps, best efforts, time in HR zones and first-vs-second-half drift and power for ONE recorded activity, " +
+				"computed from Garmin's original FIT file. Use for 'my km splits', 'did I negative split', 'fastest 5 km', 'how long in zone 2', 'did my HR drift', 'my 20 min power', 'what was my NP'. " +
+				"splits: one row per km/mile (time, pace or speed, HR, cadence, power, elevation), timer time so pauses don't count, final partial split labelled. " +
 				"laps: the watch's own laps with intensity (warmup/active/cooldown/rest) and trigger (manual, distance, ...). " +
 				"best_efforts: fastest continuous 1 km, 1 mile, 5 km, 10 km, half and marathon the activity is long enough for, with where each started. " +
-				"hr_zones: time in each HR zone, as the watch recorded it with the zones in effect then (matches Garmin Connect and summarize_activities). drift: first vs second half pace, HR and aerobic decoupling. " +
+				"hr_zones: time in each HR zone, as the watch recorded it (matches Garmin Connect and summarize_activities). drift: first vs second half pace or speed, HR and aerobic decoupling. " +
+				"power: average, normalized (NP), best 5 s to 60 min, and for rides IF and TSS when ftp_watts is given. " +
 				"Get the ID from search_activities. Manual entries and GPX/TCX imports return a short 'unavailable' note.",
 			inputSchema: activityId.extend({
 				include: z
@@ -1086,10 +1116,17 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 					.enum(["km", "mile"])
 					.optional()
 					.describe("Split length and pace unit. Defaults to the user's Garmin unit setting."),
+				ftp_watts: z
+					.number()
+					.int()
+					.min(30)
+					.max(700)
+					.optional()
+					.describe("The user's cycling FTP, for IF and TSS. Only if they've given it; Garmin's API doesn't have it."),
 			}),
 			annotations: { ...READ_ONLY, title: "Activity analysis" },
 		},
-		({ activity_id, include, unit }) =>
+		({ activity_id, include, unit, ftp_watts }) =>
 			run(async () => {
 				const g = garmin();
 				const loaded = await loadAnalysis(g, activity_id);
@@ -1109,7 +1146,61 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 						zonesUnavailable = errorText(err);
 					}
 				}
-				return { activity_id, ...formatAnalysis(a, { unit: resolvedUnit, include, zones, zonesUnavailable }) };
+				const power: PowerContext = { ftp: ftp_watts };
+				if (include.includes("power") && a.power) power.weight = await latestWeight();
+				return { activity_id, ...formatAnalysis(a, { unit: resolvedUnit, include, zones, zonesUnavailable, power }) };
+			}),
+	);
+
+	server.registerTool(
+		"get_strength_progress",
+		{
+			title: "Strength progress",
+			description:
+				"Strength training progress per exercise: sets, reps, max weight, volume and average load for each session, and the first-vs-last trend. " +
+				"Use for 'am I getting stronger', 'is my bench going up', 'top set over the last 8 weeks', 'how has my deadlift changed'. " +
+				"Pass detail='sets' for top sets, reps at a weight or estimated 1RM: it reads each session's file (slow the first time, then cached); if set_detail_complete is false, call again. " +
+				"Only sets logged on the watch or in Garmin Connect count. Planned workout targets are never included.",
+			inputSchema: z.object({
+				exercise: z
+					.string()
+					.trim()
+					.min(1)
+					.max(100)
+					.optional()
+					.describe("Exercise in English, e.g. 'dumbbell bench press'; 'bench press' matches every variant. Omit for all: the top 5 are detailed."),
+				weeks: z.number().int().min(1).max(52).default(8).describe("Weeks back from today."),
+				unit: z.enum(["kg", "lb"]).optional().describe("Defaults to the user's Garmin unit setting."),
+				detail: z.enum(["sets"]).optional().describe("'sets' adds individual sets, top set and estimated 1RM."),
+			}),
+			annotations: { ...READ_ONLY, title: "Strength progress" },
+		},
+		({ exercise, weeks, unit, detail }) =>
+			run(async () => {
+				const g = garmin();
+				const end = await userToday();
+				const start = addDays(end, 1 - weeks * 7);
+				// Uncached: sets edited in Garmin Connect change the summary of past sessions.
+				const { list, capped } = await fetchActivities(
+					g,
+					{ ...activityTypeParams("fitness_equipment", "strength_training"), startDate: start, endDate: end, sortBy: "startLocal", sortOrder: "desc" },
+					undefined,
+					{ cacheTtl: 0 },
+				);
+				const sessions = list.map(parseSession);
+				// Only files that can add detail: something recorded, and the exercise asked for.
+				const wanted = sessions.filter(
+					(s) => s.recorded && (exercise === undefined || s.rows.some((r) => r.name !== undefined && matchesExercise(exercise, r.search))),
+				);
+				const chosen = wanted.slice(0, pbLimits.maxActivities);
+				const sets = detail === "sets" ? await loadSets(g, chosen, pbLimits, { describe: errorText }) : undefined;
+				const resolvedUnit = unit ?? ((await settings()).measurementSystem === "statute_us" ? "lb" : "kg");
+				const { notes, ...result } = strengthProgress(sessions, { unit: resolvedUnit, exercise, sets });
+				const more = [
+					...(capped ? ["Over 1000 strength activities in this range; only the newest are included."] : []),
+					...(sets && wanted.length > chosen.length ? [`Per-set detail covers the newest ${chosen.length} of ${wanted.length} sessions.`] : []),
+				];
+				return { start_date: start, end_date: end, ...result, notes: [...(notes as string[]), ...more] };
 			}),
 	);
 
@@ -1153,7 +1244,7 @@ export function registerGarminTools(server: McpServer, garmin: () => GarminClien
 	// No raw-path escape hatch on purpose: these tools cover every endpoint in
 	// Garmin's Personal API Swagger spec, so a generic GET only invited the model to
 	// guess at endpoints that don't exist (golf, training status, etc.). The binary
-	// /download-service/files/activity/{id} is read only by get_activity_analysis.
+	// /download-service/files/activity/{id} is read only to decode activity files (see loadFit).
 	// Omitted from the spec's 26 paths: /usersummary-service/usersummary/daily (same
 	// data as get_daily_summaries) and /weight-service/weight/all (same as get_weight).
 }
