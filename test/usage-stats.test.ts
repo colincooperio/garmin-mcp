@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 // @ts-expect-error: plain .mjs script without type declarations
 import { buildReport, commitTimes, formatReport, increase, mondayOf, parseCsv, snapshots, summaryLine } from "../scripts/usage.mjs";
+import { isWindows, readText } from "./platform.ts";
 
 /**
  * Mon 16 Nov to Tue 24 Nov 2026. v1.4.2 throughout; v1.4.3 is released on
@@ -151,7 +152,7 @@ describe("npm run usage", () => {
  * - the newest snapshot is from 00:40 on the 24th.
  */
 describe("npm run usage: snapshots at real times", () => {
-	const csv = readFileSync(new URL("./fixtures/stats-downloads.csv", import.meta.url), "utf8");
+	const csv = readText(new URL("./fixtures/stats-downloads.csv", import.meta.url));
 	const at = (iso: string) => Date.parse(iso) / 1000;
 	const report = buildReport(parseCsv(csv), { now: at("2026-11-24T20:00:00Z") });
 
@@ -276,7 +277,7 @@ describe("npm run usage: snapshots at real times", () => {
 });
 
 describe("stats workflow", () => {
-	const stats = readFileSync(new URL("../.github/workflows/stats.yml", import.meta.url), "utf8");
+	const stats = readText(new URL("../.github/workflows/stats.yml", import.meta.url));
 
 	it("runs daily at 00:17 UTC with a 06:17 back-up, and by hand; may only write contents, and only pushes the stats branch", () => {
 		const crons = [...stats.matchAll(/cron: "([^"]+)"/g)].map((m) => m[1]);
@@ -287,6 +288,10 @@ describe("stats workflow", () => {
 		assert.deepEqual(pushes, ["git push origin HEAD:refs/heads/stats"]);
 		assert.match(stats, /EVENT: \$\{\{ github\.event_name \}\}/);
 	});
+
+	// The step runs on ubuntu-latest, so its script isn't tested on Windows, where
+	// "bash" may be missing or be WSL without a distro.
+	const skip = isWindows && "a bash script for ubuntu-latest";
 
 	/** The "Append them" step's script, run against a scratch origin as each event would. */
 	const script = (() => {
@@ -314,7 +319,7 @@ describe("stats workflow", () => {
 		return { dir, run, csv, commits };
 	}
 
-	it("a scheduled run records once per UTC day; a manual run always records another snapshot", () => {
+	it("a scheduled run records once per UTC day; a manual run always records another snapshot", { skip }, () => {
 		const { run, csv, commits } = scratch();
 		run("schedule");
 		const first = csv().trim().split("\n");
@@ -332,7 +337,7 @@ describe("stats workflow", () => {
 		assert.equal(commits(), 2);
 	});
 
-	it("moves an existing file to the new header, keeping its older four-column rows", () => {
+	it("moves an existing file to the new header, keeping its older four-column rows", { skip }, () => {
 		const { dir, run, csv } = scratch();
 		sh(
 			dir,

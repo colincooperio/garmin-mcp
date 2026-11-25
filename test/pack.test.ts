@@ -2,22 +2,18 @@
 // project and run its `garmin-mcp` bin. Proves the published package works
 // without the repo, the TypeScript sources or any devDependency.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { isWindows, npm } from "./platform.ts";
 import { StdioClient } from "./stdio-client.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 /** The manifest lists every tool (test/mcpb.test.ts checks it against the server). */
 const TOOL_COUNT: number = JSON.parse(readFileSync(join(root, "mcpb/manifest.json"), "utf8")).tools.length;
-
-function npm(args: string[], cwd: string): string {
-	return execFileSync("npm", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-}
 
 /**
  * The tarball name from `npm pack --json`. npm 11 and earlier print an array
@@ -48,14 +44,14 @@ describe("npm package", { timeout: 180_000 }, () => {
 		const tarball = join(tmp, packedFilename(npm(["pack", "--json", "--pack-destination", tmp], root)));
 
 		project = join(tmp, "project");
-		execFileSync("mkdir", [project]);
+		mkdirSync(project);
 		writeFileSync(join(project, "package.json"), JSON.stringify({ name: "pack-test", private: true }));
 		npm(["install", "--no-audit", "--no-fund", "--prefer-offline", tarball], project);
 	});
 
 	after(async () => {
 		await client?.close();
-		if (tmp) rmSync(tmp, { recursive: true, force: true });
+		if (tmp) rmSync(tmp, { recursive: true, force: true, maxRetries: 5 });
 	});
 
 	it("installs only the runtime dependencies", () => {
@@ -73,7 +69,9 @@ describe("npm package", { timeout: 180_000 }, () => {
 	});
 
 	it("serves every tool from the installed bin", async () => {
-		client = new StdioClient(join(project, "node_modules/.bin/garmin-mcp"), [], project);
+		const bin = join(project, "node_modules", ".bin", "garmin-mcp");
+		// On Windows the bin is a .cmd script, which only a shell can start.
+		client = isWindows ? new StdioClient(`"${bin}.cmd"`, [], project, true) : new StdioClient(bin, [], project);
 		const init = await client.request("initialize", {
 			protocolVersion: "2025-06-18",
 			capabilities: {},

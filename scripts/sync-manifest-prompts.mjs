@@ -51,7 +51,8 @@ export function syncedManifest(text) {
 	return text.slice(0, start) + block + text.slice(end);
 }
 
-const current = readFileSync(path, "utf8");
+// LF, as committed: an older Windows clone can still have this file as CRLF.
+const current = readFileSync(path, "utf8").replaceAll("\r\n", "\n");
 const next = syncedManifest(current);
 if (process.argv.includes("--check")) {
 	if (next !== current) {
